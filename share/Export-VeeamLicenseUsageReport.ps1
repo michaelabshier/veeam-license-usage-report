@@ -309,11 +309,32 @@ task will run under, on the server that will run it:
         throw "No credential file at $CredentialPath. Create it with: Get-Credential | Export-Clixml -Path '$CredentialPath', logged in as the account that will run this script."
     }
 
+    $raw = Get-Content -LiteralPath $CredentialPath -Raw
+    if ($raw -match '^\s*\{') {
+        # Machine scope payload written by Invoke-VeeamLicenseUsageReport.ps1
+        # -SaveCredential. Readable by any account on the computer that made
+        # it, which is what allows an unattended run with nobody signed in.
+        $data = $raw | ConvertFrom-Json
+        Add-Type -AssemblyName System.Security
+        try {
+            $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
+                [Convert]::FromBase64String($data.Password), $null,
+                [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+            $plain = [System.Text.Encoding]::UTF8.GetString($bytes)
+            [Array]::Clear($bytes, 0, $bytes.Length)
+        }
+        catch {
+            throw "Could not decrypt $CredentialPath. A machine scope credential is bound to the computer that created it ($($data.Machine)), so it does not travel. Underlying error: $($_.Exception.Message)"
+        }
+        return New-Object System.Management.Automation.PSCredential(
+            $data.UserName, (ConvertTo-SecureString -String $plain -AsPlainText -Force))
+    }
+
     try {
         return Import-Clixml -LiteralPath $CredentialPath
     }
     catch {
-        throw "Could not decrypt $CredentialPath. DPAPI ties the file to one Windows account on one machine, so it must be created by the account that runs this script, on this server. Underlying error: $($_.Exception.Message)"
+        throw "Could not decrypt $CredentialPath. This is a user scope file, which DPAPI ties to one Windows account on one machine, so only the account that saved it can read it. For a task that runs with nobody signed in, save it in machine scope instead. Underlying error: $($_.Exception.Message)"
     }
 }
 
@@ -540,6 +561,65 @@ function Get-EmLicensingInfo {
     return ([string]$response.Content | ConvertFrom-Json)
 }
 
+function Write-HistoryCsv {
+    # Rewrites the history file so that running again inside the same month
+    # replaces that month's rows rather than appending a second set. Rows for
+    # every other month are carried through untouched.
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Rows,
+        [Parameter(Mandatory)][string]$HistoryPath,
+        [Parameter(Mandatory)][string]$MonthStamp
+    )
+
+    $new = @($Rows)
+    if (-not (Test-Path -LiteralPath $HistoryPath)) {
+        $new | Export-Csv -LiteralPath $HistoryPath -NoTypeInformation -Encoding UTF8
+        Write-Log "Created $HistoryPath with $($new.Count) row(s)." 'OK'
+        return
+    }
+
+    $existing = @()
+    try { $existing = @(Import-Csv -LiteralPath $HistoryPath) }
+    catch {
+        Write-Log "Could not read $HistoryPath ($($_.Exception.Message)). Keeping the old file as $HistoryPath.bad and starting a new one." 'WARN'
+        Move-Item -LiteralPath $HistoryPath -Destination "$HistoryPath.bad" -Force
+        $new | Export-Csv -LiteralPath $HistoryPath -NoTypeInformation -Encoding UTF8
+        return
+    }
+
+    # A row with no Month column is kept rather than discarded, so a file this
+    # script did not write is never silently thrown away.
+    $kept = @($existing | Where-Object {
+        (-not $_.PSObject.Properties['Month']) -or ($_.Month -ne $MonthStamp)
+    })
+    $replaced = @($existing).Count - $kept.Count
+    $all = @($kept) + $new
+
+    # Export-Csv takes its column set from the first object alone, and the
+    # licensing schema can change between Veeam versions, so every row is
+    # projected onto the union of the columns actually present.
+    $columns = New-Object System.Collections.Generic.List[string]
+    foreach ($row in $all) {
+        foreach ($name in $row.PSObject.Properties.Name) {
+            if (-not $columns.Contains($name)) { [void]$columns.Add($name) }
+        }
+    }
+    $all = @($all | Select-Object -Property $columns.ToArray())
+
+    # Written alongside and swapped in, so an interrupted run cannot truncate
+    # history that has been accumulating for months.
+    $tmp = "$HistoryPath.tmp"
+    $all | Export-Csv -LiteralPath $tmp -NoTypeInformation -Encoding UTF8
+    Move-Item -LiteralPath $tmp -Destination $HistoryPath -Force
+
+    if ($replaced -gt 0) {
+        Write-Log "Wrote $($new.Count) row(s) for $MonthStamp to $HistoryPath, replacing $replaced earlier row(s) for the same month." 'OK'
+    }
+    else {
+        Write-Log "Added $($new.Count) row(s) for $MonthStamp to $HistoryPath." 'OK'
+    }
+}
+
 function Add-HistoryRow {
     # Flattens the licensing summary into CSV rows for month-over-month
     # trending. Field names were read from a live response, but every lookup
@@ -639,13 +719,7 @@ function Add-HistoryRow {
     foreach ($k in $common.Keys) { $totalRow[$k] = $common[$k] }
     $rows += [pscustomobject]$totalRow
 
-    if (Test-Path -LiteralPath $HistoryPath) {
-        $rows | Export-Csv -LiteralPath $HistoryPath -NoTypeInformation -Encoding UTF8 -Append
-    }
-    else {
-        $rows | Export-Csv -LiteralPath $HistoryPath -NoTypeInformation -Encoding UTF8
-    }
-    Write-Log "Appended $(@($rows).Count) row(s) to $HistoryPath" 'OK'
+    Write-HistoryCsv -Rows $rows -HistoryPath $HistoryPath -MonthStamp $MonthStamp
     Write-Log "Licence: $edition, $used of $licensed instances used, $daysLeft days remaining." 'OK'
 
     return [pscustomobject]@{

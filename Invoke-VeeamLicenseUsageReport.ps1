@@ -164,24 +164,125 @@ function Import-StoredCredential {
     if (-not (Test-Path -LiteralPath $Path)) {
         throw "No stored credential at $Path. Run this script with -SaveCredential, as the account the scheduled task will run under."
     }
+    $raw = Get-Content -LiteralPath $Path -Raw
+    if ($raw -match '^\s*\{') {
+        # Machine scope payload. Readable by any account on this computer,
+        # which is what lets the task run with nobody signed in.
+        $data = $raw | ConvertFrom-Json
+        Add-Type -AssemblyName System.Security
+        try {
+            $bytes = [System.Security.Cryptography.ProtectedData]::Unprotect(
+                [Convert]::FromBase64String($data.Password), $null,
+                [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+            $plain = [System.Text.Encoding]::UTF8.GetString($bytes)
+            [Array]::Clear($bytes, 0, $bytes.Length)
+        }
+        catch {
+            throw "Could not decrypt $Path. A machine scope credential is bound to the computer that created it ($($data.Machine)), so it does not travel. Run -SaveCredential here. Underlying error: $($_.Exception.Message)"
+        }
+        return New-Object System.Management.Automation.PSCredential(
+            $data.UserName, (ConvertTo-SecureString -String $plain -AsPlainText -Force))
+    }
+
     try {
         return Import-Clixml -LiteralPath $Path
     }
     catch {
-        throw "Could not decrypt $Path. DPAPI ties the file to one user on one machine, so it must be created by the account that runs the task, on this server. Underlying error: $($_.Exception.Message)"
+        throw "Could not decrypt $Path. This is a user scope file, and DPAPI ties those to one Windows account on one machine. If the task runs as SYSTEM or as a service account, run -SaveCredential again to rewrite it in machine scope, which is the default. Underlying error: $($_.Exception.Message)"
+    }
+}
+
+function Protect-CredentialFile {
+    # A machine scope blob can be decrypted by anything running on this
+    # computer, so the file permissions are what actually limit who can read
+    # it. Inheritance is switched off so a permissive ACL further up
+    # ProgramData cannot widen it again.
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string[]]$GrantTo
+    )
+    try {
+        $sids = New-Object System.Collections.Generic.List[string]
+        # SYSTEM, so a task registered to run as SYSTEM can read it.
+        [void]$sids.Add('S-1-5-18')
+        # Administrators, for maintenance from an elevated session.
+        [void]$sids.Add('S-1-5-32-544')
+        # Whoever saved it. Without this an unelevated administrator locks
+        # themselves out of their own file, because an unelevated token does
+        # not carry the Administrators ACE.
+        [void]$sids.Add([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+        # The account the task will run as, when it is neither of the above.
+        foreach ($name in @($GrantTo)) {
+            if ($name -and $name -notin @('SYSTEM', 'NT AUTHORITY\SYSTEM', 'S-1-5-18')) {
+                [void]$sids.Add((Resolve-TaskAccount -Name $name).Sid)
+            }
+        }
+
+        $acl = Get-Acl -LiteralPath $Path
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
+
+        $granted = New-Object System.Collections.Generic.List[string]
+        foreach ($sid in ($sids | Select-Object -Unique)) {
+            $id = New-Object System.Security.Principal.SecurityIdentifier($sid)
+            $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+                $id, 'FullControl', 'Allow')))
+            $label = $sid
+            try { $label = $id.Translate([System.Security.Principal.NTAccount]).Value } catch { }
+            [void]$granted.Add($label)
+        }
+        Set-Acl -LiteralPath $Path -AclObject $acl
+        Write-Log "Restricted the credential file to: $($granted -join ', ')."
+    }
+    catch {
+        Write-Log "Could not restrict permissions on $Path ($($_.Exception.Message)). Review them by hand before relying on this." 'WARN'
     }
 }
 
 function Save-StoredCredential {
-    param([Parameter(Mandatory)][string]$Path)
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateSet('Machine', 'User')][string]$Scope = 'Machine',
+        [string[]]$GrantTo
+    )
     $dir = Split-Path -Parent $Path
     if ($dir -and -not (Test-Path -LiteralPath $dir)) {
         New-Item -ItemType Directory -Path $dir -Force | Out-Null
     }
     $cred = Get-Credential -Message 'Enterprise Manager account (needs the Portal Administrator role)'
     if (-not $cred) { throw 'No credential was entered.' }
-    $cred | Export-Clixml -LiteralPath $Path -Force
-    Write-Log "Stored the credential at $Path, encrypted for $env:USERDOMAIN\$env:USERNAME on $env:COMPUTERNAME." 'OK'
+
+    if ($Scope -eq 'User') {
+        $cred | Export-Clixml -LiteralPath $Path -Force
+        Write-Log "Stored the credential at $Path, encrypted for $env:USERDOMAIN\$env:USERNAME on $env:COMPUTERNAME." 'OK'
+        Write-Log 'User scope means no other account can read it, so a task running as SYSTEM or as a service account will fail unless that account saves its own copy.' 'WARN'
+        return
+    }
+
+    # Machine scope. The point of it is that the task's account never has to
+    # sign in to save a copy of its own, which is what lets the report run
+    # with nobody logged on.
+    Add-Type -AssemblyName System.Security
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($cred.GetNetworkCredential().Password)
+    try {
+        $blob = [System.Security.Cryptography.ProtectedData]::Protect(
+            $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    }
+    finally { [Array]::Clear($bytes, 0, $bytes.Length) }
+
+    [ordered]@{
+        Format   = 'VeeamLicenseReport.Credential.v1'
+        Scope    = 'LocalMachine'
+        UserName = $cred.UserName
+        Password = [Convert]::ToBase64String($blob)
+        Machine  = $env:COMPUTERNAME
+        SavedBy  = "$env:USERDOMAIN\$env:USERNAME"
+        SavedUtc = (Get-Date).ToUniversalTime().ToString('o')
+    } | ConvertTo-Json | Set-Content -LiteralPath $Path -Encoding UTF8 -Force
+
+    Protect-CredentialFile -Path $Path -GrantTo $GrantTo
+    Write-Log "Stored the credential at $Path, encrypted for this computer rather than for one account." 'OK'
+    Write-Log 'Machine scope is the trade that buys unattended runs: any administrator on this computer can decrypt it, which is why the file is restricted. It is still useless on any other computer.' 'WARN'
 }
 
 # ============================================================================
@@ -576,6 +677,65 @@ that fires. Add it to this script ahead of the download. See the README section
     return $item.FullName
 }
 
+function Write-HistoryCsv {
+    # Rewrites the history file so that running again inside the same month
+    # replaces that month's rows rather than appending a second set. Rows for
+    # every other month are carried through untouched.
+    param(
+        [Parameter(Mandatory)][AllowEmptyCollection()][object[]]$Rows,
+        [Parameter(Mandatory)][string]$HistoryPath,
+        [Parameter(Mandatory)][string]$MonthStamp
+    )
+
+    $new = @($Rows)
+    if (-not (Test-Path -LiteralPath $HistoryPath)) {
+        $new | Export-Csv -LiteralPath $HistoryPath -NoTypeInformation -Encoding UTF8
+        Write-Log "Created $HistoryPath with $($new.Count) row(s)." 'OK'
+        return
+    }
+
+    $existing = @()
+    try { $existing = @(Import-Csv -LiteralPath $HistoryPath) }
+    catch {
+        Write-Log "Could not read $HistoryPath ($($_.Exception.Message)). Keeping the old file as $HistoryPath.bad and starting a new one." 'WARN'
+        Move-Item -LiteralPath $HistoryPath -Destination "$HistoryPath.bad" -Force
+        $new | Export-Csv -LiteralPath $HistoryPath -NoTypeInformation -Encoding UTF8
+        return
+    }
+
+    # A row with no Month column is kept rather than discarded, so a file this
+    # script did not write is never silently thrown away.
+    $kept = @($existing | Where-Object {
+        (-not $_.PSObject.Properties['Month']) -or ($_.Month -ne $MonthStamp)
+    })
+    $replaced = @($existing).Count - $kept.Count
+    $all = @($kept) + $new
+
+    # Export-Csv takes its column set from the first object alone, and the
+    # licensing schema can change between Veeam versions, so every row is
+    # projected onto the union of the columns actually present.
+    $columns = New-Object System.Collections.Generic.List[string]
+    foreach ($row in $all) {
+        foreach ($name in $row.PSObject.Properties.Name) {
+            if (-not $columns.Contains($name)) { [void]$columns.Add($name) }
+        }
+    }
+    $all = @($all | Select-Object -Property $columns.ToArray())
+
+    # Written alongside and swapped in, so an interrupted run cannot truncate
+    # history that has been accumulating for months.
+    $tmp = "$HistoryPath.tmp"
+    $all | Export-Csv -LiteralPath $tmp -NoTypeInformation -Encoding UTF8
+    Move-Item -LiteralPath $tmp -Destination $HistoryPath -Force
+
+    if ($replaced -gt 0) {
+        Write-Log "Wrote $($new.Count) row(s) for $MonthStamp to $HistoryPath, replacing $replaced earlier row(s) for the same month." 'OK'
+    }
+    else {
+        Write-Log "Added $($new.Count) row(s) for $MonthStamp to $HistoryPath." 'OK'
+    }
+}
+
 function Add-HistoryRow {
     <#
         Turns the GetInfo response into CSV rows so consumption can be trended
@@ -684,13 +844,7 @@ function Add-HistoryRow {
         ExpirationDate    = $expiration
     }
 
-    if (Test-Path -LiteralPath $HistoryPath) {
-        $rows | Export-Csv -LiteralPath $HistoryPath -NoTypeInformation -Encoding UTF8 -Append
-    }
-    else {
-        $rows | Export-Csv -LiteralPath $HistoryPath -NoTypeInformation -Encoding UTF8
-    }
-    Write-Log "Appended $(@($rows).Count) row(s) to $HistoryPath" 'OK'
+    Write-HistoryCsv -Rows $rows -HistoryPath $HistoryPath -MonthStamp $MonthStamp
     Write-Log "Licence: $edition, $used of $licensed instances used, $daysLeft days remaining." 'OK'
 }
 
@@ -1007,7 +1161,8 @@ try {
 
         'SaveCredential' {
             $config = Get-ReportConfig -Path $ConfigPath
-            Save-StoredCredential -Path (Get-ConfigValue $config.EnterpriseManager 'CredentialFile')
+            Save-StoredCredential -Path (Get-ConfigValue $config.EnterpriseManager 'CredentialFile') `
+                -GrantTo @([string](Get-ConfigValue (Get-ConfigValue $config 'Schedule') 'RunAsUser' 'SYSTEM'))
             exit 0
         }
 

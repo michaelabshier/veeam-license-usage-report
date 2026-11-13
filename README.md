@@ -182,6 +182,50 @@ To remove it:
 
 ---
 
+## Running with nobody signed in
+
+This is the normal case for a server, and it turns on the credential file
+rather than on the trigger.
+
+DPAPI encrypts per account by default, so a credential saved by you can only be
+read back by you. A task running as SYSTEM or as a service account then cannot
+decrypt it, and the run fails. That is why `-SaveCredential` now writes the file
+in **machine scope**: encrypted to the computer instead of to one account, so
+the task's account never has to sign in to save a copy of its own.
+
+```powershell
+.\Invoke-VeeamLicenseUsageReport.ps1 -SaveCredential
+.\Invoke-VeeamLicenseUsageReport.ps1 -Install -Server em.contoso.com   # runs as SYSTEM
+```
+
+The trade is real and worth stating plainly: anything running on that computer
+can decrypt a machine scope blob, so the file is the only thing protecting the
+password. `-SaveCredential` therefore strips inherited permissions and grants
+only SYSTEM, the local Administrators group, and the account that saved it. Add
+the task's own account with `-GrantAccess 'CONTOSO\svc-veeam'` when it is
+neither. The blob is still useless on any other computer. If you would rather
+keep per-account protection, `-CredentialScope User` restores the old behaviour,
+and you then have to sign in as the task account to save it.
+
+Pick the run-as account to match:
+
+| Situation | `-RunAsUser` | `-TaskLogonType` | Signed in? |
+| --- | --- | --- | --- |
+| Server, dedicated service account | `CONTOSO\svc-veeam` | `Auto` (stores the password) | Not needed |
+| Server, no account to hand | `SYSTEM` (the default) | n/a | Not needed |
+| Entra joined workstation | the local account | `Interactive` | **Required** |
+
+`Interactive` exists only because a Microsoft Entra joined machine has no domain
+to cache a task password against. It runs solely while that account is signed
+in, so treat it as a way to try the task out rather than to operate it.
+
+Two things that look like answers and are not. **S4U**, the "do not store
+password" option in the Task Scheduler UI, runs unattended but produces a token
+that cannot decrypt user scope DPAPI data, so it breaks the credential file
+instead of helping. And a task that merely *registers* under a service account
+proves nothing: it registers happily and fails on first run, which is how the
+mismatch in this project went unnoticed until a run was forced by hand.
+
 ## Output layout
 
 ```
