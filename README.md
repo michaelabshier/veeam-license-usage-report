@@ -361,7 +361,7 @@ configuration instead:
 netsh winhttp show proxy
 ```
 
-### Keeping this file honest
+## Keeping this file honest
 
 The scripts no longer repeat the traps below; they point here. That only works
 while this file still contains them, so it is checked rather than trusted:
