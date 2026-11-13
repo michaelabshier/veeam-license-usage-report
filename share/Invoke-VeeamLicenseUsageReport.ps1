@@ -169,7 +169,7 @@ param(
     [ValidateRange(1, 65535)]
     [int]$Port = 9443,
 
-    [string]$CredentialPath = 'C:\ProgramData\VeeamLicenseUsageReport\em.cred',
+    [string]$CredentialPath = 'C:\ProgramData\VeeamLicenseReport\em.cred',
 
     [string]$OutputFolder = 'C:\VeeamLicenseReports',
 

@@ -145,6 +145,12 @@ under your own login will not decrypt under a service account.
 
 The account needs the **Portal Administrator** role in Enterprise Manager.
 
+Every script here defaults to the same file,
+`C:\ProgramData\VeeamLicenseReport\em.cred`, so a credential saved with one is
+found by the others. If you override it, override it everywhere: a task built
+with one path and a credential saved at another registers cleanly and then
+fails on its first run, which is a slow way to find out.
+
 ### 3. Test
 
 ```powershell

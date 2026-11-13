@@ -62,7 +62,7 @@
     Create it once, logged in as the account the scheduled task will run under,
     on the server that will run it:
 
-        $p = 'C:\ProgramData\VeeamLicenseUsageReport\em.cred'
+        $p = 'C:\ProgramData\VeeamLicenseReport\em.cred'
         New-Item -ItemType Directory -Path (Split-Path $p) -Force
         Get-Credential | Export-Clixml -Path $p
 
@@ -113,12 +113,12 @@
     Run by hand, prompting for the credential.
 
 .EXAMPLE
-    .\Export-VeeamLicenseUsageReport.ps1 -Server em.contoso.com -CredentialPath C:\ProgramData\VeeamLicenseUsageReport\em.cred -SkipCertificateCheck
+    .\Export-VeeamLicenseUsageReport.ps1 -Server em.contoso.com -CredentialPath C:\ProgramData\VeeamLicenseReport\em.cred -SkipCertificateCheck
 
     Unattended, as a scheduled task would run it.
 
 .EXAMPLE
-    .\Export-VeeamLicenseUsageReport.ps1 -Server em.contoso.com -CredentialPath C:\ProgramData\VeeamLicenseUsageReport\em.cred -Monthly -SkipCertificateCheck
+    .\Export-VeeamLicenseUsageReport.ps1 -Server em.contoso.com -CredentialPath C:\ProgramData\VeeamLicenseReport\em.cred -Monthly -SkipCertificateCheck
 
     Fetch the archived report for the month just ended. Schedule early in the month.
 
@@ -129,7 +129,7 @@
     Capture the paths of the files written.
 
 .EXAMPLE
-    schtasks /Create /TN "Veeam License Usage Report" /SC MONTHLY /MO LASTDAY /M * /ST 22:00 /RL HIGHEST /RU "CONTOSO\svc-veeam" /RP * /TR "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"C:\Scripts\Export-VeeamLicenseUsageReport.ps1\" -Server em.contoso.com -CredentialPath C:\ProgramData\VeeamLicenseUsageReport\em.cred -SkipCertificateCheck"
+    schtasks /Create /TN "Veeam License Usage Report" /SC MONTHLY /MO LASTDAY /M * /ST 22:00 /RL HIGHEST /RU "CONTOSO\svc-veeam" /RP * /TR "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \"C:\Scripts\Export-VeeamLicenseUsageReport.ps1\" -Server em.contoso.com -CredentialPath C:\ProgramData\VeeamLicenseReport\em.cred -SkipCertificateCheck"
 
     Create the monthly task yourself, running on the last day of every month.
     See the notes below about expressing "last day of the month" correctly.
@@ -272,7 +272,7 @@ No credential was supplied. Pass one of:
 To create the file for unattended use, logged in as the account the scheduled
 task will run under, on the server that will run it:
 
-    $p = 'C:\ProgramData\VeeamLicenseUsageReport\em.cred'
+    $p = 'C:\ProgramData\VeeamLicenseReport\em.cred'
     New-Item -ItemType Directory -Path (Split-Path $p) -Force
     Get-Credential | Export-Clixml -Path $p
 '@
