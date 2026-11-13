@@ -11,8 +11,14 @@ per-backup-server sections and their per-VM detail.
 
 | File | Purpose |
 | --- | --- |
-| `Invoke-VeeamLicenseUsageReport.ps1` | The script. Report run, credential storage, connection test, task install and removal. |
+| `Invoke-VeeamLicenseUsageReport.ps1` | Config file driven. Report run, credential storage, connection test, task install and removal. |
 | `VeeamLicenseReport.config.sample.json` | Copy to `VeeamLicenseReport.config.json` and edit. |
+| `share/Invoke-VeeamLicenseUsageReport.ps1` | The same thing with no config file: every setting is a parameter, and `-Install` writes them into the task. Self contained, so it is the one to hand to someone else. |
+| `share/Export-VeeamLicenseUsageReport.ps1` | Run once, no scheduling of its own, for driving from a scheduler you already have. Returns an object with `-PassThru`. |
+
+The three share the same credential file and the same output layout, so they can
+be mixed. Setup below is written against the config file driven script; for the
+`share/` pair, pass the same values as parameters instead.
 
 ---
 
@@ -184,8 +190,8 @@ To remove it:
 
 ## Running with nobody signed in
 
-This is the normal case for a server, and it turns on the credential file
-rather than on the trigger.
+This is the normal case for a server, it is verified working, and it turns on
+the credential file rather than on the trigger.
 
 DPAPI encrypts per account by default, so a credential saved by you can only be
 read back by you. A task running as SYSTEM or as a service account then cannot
@@ -246,6 +252,71 @@ instead of helping. And a task that merely *registers* under a service account
 proves nothing: it registers happily and fails on first run, which is how the
 mismatch in this project went unnoticed until a run was forced by hand.
 
+## Checking a run
+
+Do not wait for month end to find out. Trigger it by hand from an **elevated**
+PowerShell, since starting a task that runs as SYSTEM needs elevation just as
+registering one does:
+
+```powershell
+$n = "Veeam License Usage Report (Monthly)"
+Start-ScheduledTask $n
+do { Start-Sleep 3 } while ((Get-ScheduledTask -TaskName $n).State -eq 'Running')
+Get-ScheduledTaskInfo -TaskName $n | Format-List LastRunTime, LastTaskResult, NextRunTime
+```
+
+Then read what it actually did, rather than trusting the exit code alone:
+
+```powershell
+Get-Content (Get-ChildItem C:\VeeamLicenseReports\_logs\run_*.log |
+    Sort-Object LastWriteTime -Descending | Select-Object -First 1).FullName
+```
+
+`LastTaskResult` of `0` is success. The line that proves which account ran it is
+the second in the log:
+
+```
+[INFO ] Host SERVER01, account NT AUTHORITY\SYSTEM, PowerShell 5.1...
+```
+
+If that names a person instead, the task is still running as them and will stop
+working the moment they are signed out. A completed run ends with
+`=== Finished: 3 file(s) in ... ===`.
+
+### Three failure signatures
+
+They point at different things, and telling them apart saves a lot of guessing.
+
+**No new log file at all.** It died during parameter binding, before logging
+starts, so the task looks like it ran and did nothing. Reproduce it with the
+task's own command line, passed as a verbatim command line rather than as a
+PowerShell argument, which is the only way the quoting survives:
+
+```powershell
+$x = [xml](Export-ScheduledTask -TaskName "Veeam License Usage Report (Monthly)")
+Start-Process powershell.exe -ArgumentList $x.Task.Actions.Exec.Arguments -Wait -NoNewWindow
+```
+
+**The log stops at "Could not decrypt".** The run-as account cannot read the
+credential, which means it is still a user scope file. Check the first
+character:
+
+```powershell
+(Get-Content C:\ProgramData\VeeamLicenseReport\em.cred -Raw).Substring(0, 1)
+```
+
+`{` is machine scope and correct. `<` is the old per-account Clixml, so run
+`-SaveCredential` again.
+
+**The log stops at "Fetching the Enterprise Manager login page".** Network
+rather than permissions. This is where a proxy difference shows, because SYSTEM
+does not inherit a user's proxy settings and uses the WinHTTP machine
+configuration instead:
+
+```powershell
+netsh winhttp show proxy
+```
+
 ## Output layout
 
 ```
@@ -301,6 +372,25 @@ servers:
   password; the login page does carry a GSS form.
 - The scheduled task trigger was registered for real: `<Day>Last</Day>` returned
   a next run time of **30 November 2026 22:00**.
+- The whole unattended path ran end to end: a task registered as SYSTEM, with
+  no stored Windows password, decrypted the machine scope credential, signed in
+  to Enterprise Manager, generated and downloaded both formats and exited `0`.
+  That is the only check that proves the arrangement, and it is worth repeating
+  after any change to the account, the credential or the script's location.
+
+One caution about how that was reached. An earlier round validated the task XML
+against a **mocked** `Register-ScheduledTask`, which exercised the named-account
+branch and never touched the real service. The SYSTEM branch was broken the
+whole time and the mock reported success, which is worse than having no test at
+all, because it reads like coverage. Validate task XML against the Task
+Scheduler service itself, with `TASK_VALIDATE_ONLY`, which checks it without
+registering anything:
+
+```powershell
+$svc = New-Object -ComObject Schedule.Service; $svc.Connect()
+$td = $svc.NewTask(0); $td.XmlText = $xml
+$svc.GetFolder('\').RegisterTaskDefinition('Probe', $td, 1, $null, $null, 5, $null)
+```
 
 ### Traps worth recording
 
