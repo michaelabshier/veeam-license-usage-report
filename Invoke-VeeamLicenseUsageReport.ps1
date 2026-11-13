@@ -32,6 +32,12 @@
     Path to the JSON configuration file. Defaults to
     VeeamLicenseReport.config.json beside this script.
 
+.PARAMETER InitConfig
+    Writes a starter configuration file with every setting at its default,
+    then exits. Use it instead of copying the sample file, which means this
+    script needs nothing alongside it. It refuses to overwrite an existing
+    file. Every key it writes is described under NOTES below.
+
 .PARAMETER SaveCredential
     Prompts for the Enterprise Manager credential and stores it encrypted at
     EnterpriseManager.CredentialFile.
@@ -96,8 +102,10 @@
 .NOTES
     CONFIGURATION FILE
 
-    Everything other than the switches above lives in the JSON file. Copy
-    VeeamLicenseReport.config.sample.json and edit it.
+    Everything other than the switches above lives in the JSON file. Run
+    -InitConfig to write one with every setting at its default, then edit it.
+    The sample file in the repository is the same content, for when you have
+    the repository rather than just this script.
 
     EnterpriseManager
       Server                Enterprise Manager FQDN.
@@ -200,6 +208,12 @@ param(
     [Parameter(ParameterSetName = 'Uninstall', Mandatory)]
     [switch]$Uninstall,
 
+    # So the script is usable on its own. Downloaded without the sample file,
+    # there would otherwise be no way to produce a configuration except by
+    # writing the JSON by hand against a schema you cannot see.
+    [Parameter(ParameterSetName = 'InitConfig', Mandatory)]
+    [switch]$InitConfig,
+
     [Parameter(ParameterSetName = 'Run')]
     [switch]$NoEmail
 )
@@ -255,7 +269,7 @@ function Get-ConfigValue {
 function Get-ReportConfig {
     param([Parameter(Mandatory)][string]$Path)
     if (-not (Test-Path -LiteralPath $Path)) {
-        throw "Configuration file not found: $Path. Copy VeeamLicenseReport.config.sample.json to that name and edit it."
+        throw "Configuration file not found: $Path. Create one with: .\$(Split-Path -Leaf $PSCommandPath) -InitConfig, then edit it. Running -InitConfig writes a complete file with every setting at its default, so the sample file is not needed."
     }
     $cfg = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
     foreach ($section in 'EnterpriseManager', 'Output') {
@@ -1320,6 +1334,57 @@ function Uninstall-ReportTask {
 
 try {
     switch ($PSCmdlet.ParameterSetName) {
+
+        'InitConfig' {
+            $target = if ($ConfigPath) { $ConfigPath } else { Join-Path $PSScriptRoot 'VeeamLicenseReport.config.json' }
+            if (Test-Path -LiteralPath $target) {
+                throw "$target already exists. Delete or rename it first; this will not overwrite a configuration you may have edited."
+            }
+            # Written from here rather than copied from the sample file, so the
+            # script does not depend on anything shipping alongside it. Get-Help
+            # on this script documents every key.
+            $starter = [ordered]@{
+                EnterpriseManager = [ordered]@{
+                    Server               = 'em.contoso.com'
+                    Port                 = 9443
+                    CredentialFile       = 'C:\ProgramData\VeeamLicenseReport\em.cred'
+                    CredentialScope      = 'Machine'
+                    GrantAccess          = @()
+                    SkipCertificateCheck = $true
+                }
+                Report = [ordered]@{
+                    Endpoint           = '/api/ZipDownload/DownloadReport'
+                    Monthly            = $false
+                    FormatParameter    = 'format'
+                    SendTimezoneOffset = $true
+                    ExtraQuery         = [ordered]@{ isAdjusted = '1' }
+                }
+                Output = [ordered]@{
+                    Folder          = 'C:\VeeamLicenseReports'
+                    Formats         = @('Pdf', 'Json')
+                    RetentionMonths = 24
+                }
+                Email = [ordered]@{
+                    Enabled        = $false
+                    SmtpServer     = 'smtp.contoso.com'
+                    Port           = 25
+                    UseSsl         = $false
+                    From           = 'veeam-reports@contoso.com'
+                    To             = @('licensing@contoso.com')
+                    Subject        = 'Veeam license usage report, {0}'
+                    CredentialFile = ''
+                }
+                Schedule = [ordered]@{
+                    Time      = '22:00'
+                    RunAsUser = 'SYSTEM'
+                    LogonType = 'Auto'
+                }
+            }
+            $starter | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $target -Encoding UTF8
+            Write-Log "Wrote a starter configuration to $target." 'OK'
+            Write-Log 'Edit EnterpriseManager.Server, then run -SaveCredential and -TestConnection. Get-Help on this script describes every setting.'
+            exit 0
+        }
 
         'Uninstall' {
             Uninstall-ReportTask

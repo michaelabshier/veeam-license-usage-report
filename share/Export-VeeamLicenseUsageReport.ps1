@@ -64,23 +64,18 @@
 
     Machine scope is the one to want. It is encrypted to the computer rather
     than to an account, so whatever your scheduler runs this as can read it,
-    without that account ever signing in to save a copy of its own. Create it
-    with the companion script:
+    without that account ever signing in to save a copy of its own. This script
+    creates it, so nothing else is needed:
 
-        .\Invoke-VeeamLicenseUsageReport.ps1 -SaveCredential -CredentialPath <path>
+        .\Export-VeeamLicenseUsageReport.ps1 -SaveCredential -CredentialPath <path>
 
-    Add -GrantAccess 'CONTOSO\svc-veeam' when the task runs as an account
-    other than SYSTEM or the one saving the file, so it is granted read access
-    on the way in.
+    Add -GrantAccess 'CONTOSO\svc-veeam' when the task will run as an account
+    other than SYSTEM or the one saving the file.
 
     User scope is the older Export-Clixml format, still read so nothing in
-    place breaks. DPAPI ties it to one Windows account on one machine, so it
-    has to be created by the account that will run this script, which means
-    signing in as that account:
-
-        $p = 'C:\ProgramData\VeeamLicenseReport\em.cred'
-        New-Item -ItemType Directory -Path (Split-Path $p) -Force
-        Get-Credential | Export-Clixml -Path $p
+    place breaks, and available with -CredentialScope User. DPAPI ties it to
+    one Windows account on one machine, so it has to be created by the account
+    that will run this script, which means signing in as that account.
 
     Neither format decrypts on a different computer.
 
@@ -135,6 +130,34 @@
 .PARAMETER MailSubject
     Subject line. `{0}` is replaced with the month stamp, for example 2026-11.
 
+.PARAMETER SaveCredential
+    Prompts for the Enterprise Manager credential and stores it encrypted at
+    -CredentialPath, then exits without running a report. Run it once, on the
+    computer that will run the report.
+
+    This exists so the script needs nothing but itself. Which account you run
+    it as does not matter at the default -CredentialScope Machine, because the
+    credential is encrypted to the computer rather than to an account.
+
+    You are prompted for the Enterprise Manager login, not a Windows one, and
+    it needs the Portal Administrator role.
+
+.PARAMETER CredentialScope
+    Machine (the default) encrypts the credential to this computer, so the
+    account your scheduler runs this as can read it without ever signing in.
+    That is what allows an unattended run. Anything running on this computer
+    can decrypt it, so the file is stripped of inherited permissions and
+    granted only to SYSTEM, the local Administrators group, the account that
+    saved it, and anything named by -GrantAccess.
+
+    User restores per-account encryption, which then requires signing in as the
+    account that will run the report in order to save it.
+
+.PARAMETER GrantAccess
+    Extra accounts to grant read access on the credential file, for when the
+    scheduled task runs as something other than SYSTEM or the account saving
+    it, for example 'CONTOSO\svc-veeam'.
+
 .PARAMETER PassThru
     Emit an object describing the run, including the paths of the files
     written, so this script can be composed into a larger one.
@@ -188,24 +211,43 @@
     that is any account on the computer, which is the whole point of it, and
     with a user scope file it has to be the account that created the file.
 
-    BEFORE YOU WIRE THIS INTO A SCHEDULER
+    WHAT DOES NOT WORK, AND FAILS QUIETLY
 
-    Read "Traps worth recording" in README.md. Several ways of doing the above
-    register cleanly, report Ready with a plausible next run time, and then
-    fail on the first real run, some of them before they can open a log file:
-    the CIM trigger class that cannot express the last day, the SYSTEM
-    principal that rejects the LogonType the documentation implies, schtasks
-    mangling the quotes inside its own /TR argument, comma separated values
-    arriving as a single string, S4U breaking the credential file, and cloud
-    synced folders evicting this script out from under the task. They are
-    recorded there rather than repeated here, so there is one copy to correct
-    when one of them turns out to be wrong.
+    Each of these registers cleanly, reports Ready with a plausible next run
+    time, and fails on the first real run. They are repeated here rather than
+    left to the project's README, because this file is meant to be usable on
+    its own.
+
+    MSFT_TaskMonthlyTrigger cannot express the last day of the month. It
+    exposes a RunOnLastDayOfMonth property and the service rejects the trigger
+    anyway, with "The parameter is incorrect". Note the property is
+    MonthOfYear, singular. New-ScheduledTaskTrigger has no monthly option.
+
+    A SYSTEM task carries no LogonType element at all.
+    <LogonType>ServiceAccount</LogonType> is what the documentation implies,
+    and the service rejects it in every combination of UserId and RunLevel.
+    Use <UserId>S-1-5-18</UserId> and omit LogonType, as Windows does for its
+    own SYSTEM tasks.
+
+    schtasks re-parses /TR, so quotes inside it must be escaped as \". A path
+    containing " - ", a OneDrive folder for example, is otherwise split apart
+    and schtasks rejects the stray '-'. It also caps /TR at 261 characters.
+
+    Comma separated values arrive as a single string, because
+    powershell.exe -File passes every argument as a literal. -Formats and
+    -MailTo are expanded again on the way in, but anything you add needs the
+    same treatment.
+
+    S4U, the "Do not store password" option, runs unattended but produces a
+    token that cannot decrypt user scope DPAPI data, so it breaks the
+    credential file rather than helping. Machine scope is unaffected.
+
+    If this script sits in a cloud synced folder, mark it "Always keep on this
+    device". Files On-Demand can evict an unpinned file, and a task running
+    with nobody signed in has no sync client to fetch it back.
 
     Whatever route you take, trigger the task by hand once and check its exit
     code and the log. Registration proves nothing.
-
-    If this file reached you on its own, ask for README.md too. It is where
-    those failure modes and their symptoms are written down.
 
     REQUIREMENTS
 
@@ -220,9 +262,9 @@
 # syntax, so every .PARAMETER becomes invisible to anyone who has not opened the
 # file. #Requires is a comment like any other, which is how this went unnoticed.
 # Keep a blank line between any comment and the help block, this one included.
-[CmdletBinding()]
+[CmdletBinding(DefaultParameterSetName = 'Run')]
 param(
-    [Parameter(Mandatory)]
+    [Parameter(Mandatory, ParameterSetName = 'Run')]
     [string]$Server,
 
     [ValidateRange(1, 65535)]
@@ -255,7 +297,21 @@ param(
     [string[]]$MailTo,
     [string]$MailSubject = 'Veeam license usage report, {0}',
 
-    [switch]$PassThru
+    [Parameter(ParameterSetName = 'Run')]
+    [switch]$PassThru,
+
+    # Kept here rather than in a companion script so this file is usable on its
+    # own: handed to someone with nothing else, it can still create the
+    # credential it needs.
+    [Parameter(Mandatory, ParameterSetName = 'SaveCredential')]
+    [switch]$SaveCredential,
+
+    [Parameter(ParameterSetName = 'SaveCredential')]
+    [ValidateSet('Machine', 'User')]
+    [string]$CredentialScope = 'Machine',
+
+    [Parameter(ParameterSetName = 'SaveCredential')]
+    [string[]]$GrantAccess
 )
 
 Set-StrictMode -Version 2.0
@@ -326,6 +382,103 @@ function Get-SafeProperty {
     return $Default
 }
 
+function Protect-CredentialFile {
+    # A machine scope blob can be decrypted by anything running on this
+    # computer, so the file permissions are what actually limit who can read
+    # it. Inheritance is switched off so a permissive ACL further up
+    # ProgramData cannot widen it again.
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [string[]]$GrantTo
+    )
+    try {
+        $sids = New-Object System.Collections.Generic.List[string]
+        # SYSTEM, so a task registered to run as SYSTEM can read it.
+        [void]$sids.Add('S-1-5-18')
+        # Administrators, for maintenance from an elevated session.
+        [void]$sids.Add('S-1-5-32-544')
+        # Whoever saved it. Without this an unelevated administrator locks
+        # themselves out of their own file, because an unelevated token does
+        # not carry the Administrators ACE.
+        [void]$sids.Add([System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value)
+        foreach ($name in @($GrantTo)) {
+            if (-not $name) { continue }
+            try {
+                [void]$sids.Add((New-Object System.Security.Principal.NTAccount($name)).Translate(
+                    [System.Security.Principal.SecurityIdentifier]).Value)
+            }
+            catch {
+                throw "Windows cannot resolve '$name' to an account on $env:COMPUTERNAME, so it cannot be granted access to the credential file. Use an account this computer knows, in DOMAIN\user form."
+            }
+        }
+
+        $acl = Get-Acl -LiteralPath $Path
+        $acl.SetAccessRuleProtection($true, $false)
+        foreach ($rule in @($acl.Access)) { [void]$acl.RemoveAccessRule($rule) }
+
+        $granted = New-Object System.Collections.Generic.List[string]
+        foreach ($sid in ($sids | Select-Object -Unique)) {
+            $id = New-Object System.Security.Principal.SecurityIdentifier($sid)
+            $acl.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule(
+                $id, 'FullControl', 'Allow')))
+            $label = $sid
+            try { $label = $id.Translate([System.Security.Principal.NTAccount]).Value } catch { }
+            [void]$granted.Add($label)
+        }
+        Set-Acl -LiteralPath $Path -AclObject $acl
+        Write-Log "Restricted the credential file to: $($granted -join ', ')."
+    }
+    catch {
+        Write-Log "Could not restrict permissions on $Path ($($_.Exception.Message)). Review them by hand before relying on this." 'WARN'
+    }
+}
+
+function Save-StoredCredential {
+    param(
+        [Parameter(Mandatory)][string]$Path,
+        [ValidateSet('Machine', 'User')][string]$Scope = 'Machine',
+        [string[]]$GrantTo
+    )
+    $dir = Split-Path -Parent $Path
+    if ($dir -and -not (Test-Path -LiteralPath $dir)) {
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+    }
+    $cred = Get-Credential -Message 'Enterprise Manager account (needs the Portal Administrator role)'
+    if (-not $cred) { throw 'No credential was entered.' }
+
+    if ($Scope -eq 'User') {
+        $cred | Export-Clixml -LiteralPath $Path -Force
+        Write-Log "Stored the credential at $Path, encrypted for $env:USERDOMAIN\$env:USERNAME on $env:COMPUTERNAME." 'OK'
+        Write-Log 'User scope means no other account can read it, so a scheduled run as SYSTEM or as a service account will fail unless that account saves its own copy.' 'WARN'
+        return
+    }
+
+    # Machine scope. The point of it is that the account your scheduler runs
+    # this as never has to sign in to save a copy of its own, which is what
+    # lets the report run with nobody logged on.
+    Add-Type -AssemblyName System.Security
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($cred.GetNetworkCredential().Password)
+    try {
+        $blob = [System.Security.Cryptography.ProtectedData]::Protect(
+            $bytes, $null, [System.Security.Cryptography.DataProtectionScope]::LocalMachine)
+    }
+    finally { [Array]::Clear($bytes, 0, $bytes.Length) }
+
+    [ordered]@{
+        Format   = 'VeeamLicenseReport.Credential.v1'
+        Scope    = 'LocalMachine'
+        UserName = $cred.UserName
+        Password = [Convert]::ToBase64String($blob)
+        Machine  = $env:COMPUTERNAME
+        SavedBy  = "$env:USERDOMAIN\$env:USERNAME"
+        SavedUtc = (Get-Date).ToUniversalTime().ToString('o')
+    } | ConvertTo-Json | Set-Content -LiteralPath $Path -Encoding UTF8 -Force
+
+    Protect-CredentialFile -Path $Path -GrantTo $GrantTo
+    Write-Log "Stored the credential at $Path, encrypted for this computer rather than for one account." 'OK'
+    Write-Log 'Machine scope is the trade that buys unattended runs: any administrator on this computer can decrypt it, which is why the file is restricted. It is still useless on any other computer.' 'WARN'
+}
+
 function Resolve-EmCredential {
     if ($Credential) {
         if ($CredentialPath) {
@@ -351,12 +504,12 @@ task will run under, on the server that will run it:
     }
 
     if (-not (Test-Path -LiteralPath $CredentialPath)) {
-        throw "No credential file at $CredentialPath. Create it with: Get-Credential | Export-Clixml -Path '$CredentialPath', logged in as the account that will run this script."
+        throw "No credential file at $CredentialPath. Create it with: .\$(Split-Path -Leaf $PSCommandPath) -SaveCredential -CredentialPath '$CredentialPath', on this computer."
     }
 
     $raw = Get-Content -LiteralPath $CredentialPath -Raw
     if ($raw -match '^\s*\{') {
-        # Machine scope payload written by Invoke-VeeamLicenseUsageReport.ps1
+        # Machine scope payload, as written by -SaveCredential
         # -SaveCredential. Readable by any account on the computer that made
         # it, which is what allows an unattended run with nobody signed in.
         $data = $raw | ConvertFrom-Json
@@ -947,6 +1100,16 @@ function Remove-ExpiredReport {
 # ============================================================================
 
 try {
+    # Before anything else, because saving a credential needs no output folder,
+    # no log file and no Enterprise Manager server.
+    if ($SaveCredential) {
+        if (-not $CredentialPath) {
+            throw 'Pass -CredentialPath to say where the credential should be stored, for example -CredentialPath C:\ProgramData\VeeamLicenseReport\em.cred'
+        }
+        Save-StoredCredential -Path $CredentialPath -Scope $CredentialScope -GrantTo $GrantAccess
+        exit 0
+    }
+
     if (-not (Test-Path -LiteralPath $OutputFolder)) {
         try {
             New-Item -ItemType Directory -Path $OutputFolder -Force -ErrorAction Stop | Out-Null

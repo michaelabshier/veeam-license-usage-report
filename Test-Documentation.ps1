@@ -102,7 +102,31 @@ foreach ($rel in $scripts) {
 
     $blank = @($rendered | Where-Object { -not ($_.description | Out-String).Trim() })
     Test-That "$rel has no empty parameter descriptions" ($blank.Count -eq 0) (($blank | ForEach-Object { $_.name }) -join ', ')
-    Test-That "$rel references README.md" ((($help | Out-String) -match 'README\.md')) 'no pointer to the single copy of the traps'
+
+    # Each script has to work as a lone download. Two things make that true:
+    # it can create the credential it needs, and its help never tells the
+    # reader to run one of the other scripts to finish setting it up.
+    Test-That "$rel can create its own credential" ($declared -contains 'SaveCredential') 'no -SaveCredential, so a lone download cannot produce one'
+
+    # The two Invoke scripts share a file name, so compare by leaf and skip
+    # anything matching this script's own name, or each flags itself.
+    $helpText = $help | Out-String
+    $self = Split-Path $rel -Leaf
+    $others = @($scripts | ForEach-Object { Split-Path $_ -Leaf } | Where-Object { $_ -ne $self } | Select-Object -Unique)
+    $directs = @($others | Where-Object { $helpText -match ('\.\\\S*' + [regex]::Escape($_)) })
+    Test-That "$rel does not instruct running another script" ($directs.Count -eq 0) "points at $($directs -join ', ')"
+}
+
+# A lone download must not need a file that ships beside it either.
+Write-Host "`nIndependence from sibling files" -ForegroundColor Cyan
+$rootHelp = Get-Help (Join-Path $base 'Invoke-VeeamLicenseUsageReport.ps1') -Full | Out-String
+Test-That 'the config driven script can write its own configuration' ($rootHelp -match 'InitConfig') 'no -InitConfig, so it depends on the sample file'
+
+foreach ($rel in $scripts) {
+    $text = Get-Content (Join-Path $base $rel) -Raw
+    $sources = @([regex]::Matches($text, '(?m)^\s*\.\s+[''"$]') | ForEach-Object { $_.Value.Trim() })
+    Test-That "$rel dot-sources nothing" ($sources.Count -eq 0) "$($sources.Count) dot-source statement(s)"
+    Test-That "$rel imports no module" (-not ($text -match 'Import-Module')) 'Import-Module present'
 }
 
 # --------------------------------------------------------------------------

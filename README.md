@@ -22,6 +22,13 @@ The three share the same credential file and the same output layout, so they can
 be mixed. Setup below is written against the config file driven script; for the
 `share/` pair, pass the same values as parameters instead.
 
+**Each script is a complete download on its own.** None dot-sources another,
+imports a module, or needs a sibling file. Each creates its own credential with
+`-SaveCredential`, and the config file driven one writes its own configuration
+with `-InitConfig` rather than needing the sample. So a single `.ps1` mailed to
+someone is enough, which is the point of `share/`. `Test-Documentation.ps1`
+asserts this rather than leaving it to drift.
+
 ---
 
 ## Read this first: the interface is undocumented
@@ -118,6 +125,14 @@ trigger day means editing the task XML in `Install-ReportTask`.
 ## Setup
 
 ### 1. Copy and edit the configuration
+
+```powershell
+.\Invoke-VeeamLicenseUsageReport.ps1 -InitConfig
+```
+
+That writes `VeeamLicenseReport.config.json` with every setting at its default
+and refuses to overwrite one that already exists. If you have the repository,
+copying the sample gets you the same content:
 
 ```powershell
 Copy-Item .\VeeamLicenseReport.config.sample.json .\VeeamLicenseReport.config.json
