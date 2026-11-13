@@ -126,6 +126,8 @@ Copy-Item .\VeeamLicenseReport.config.sample.json .\VeeamLicenseReport.config.js
 | `EnterpriseManager.Server` | Enterprise Manager FQDN. |
 | `EnterpriseManager.Port` | `9443`, the web app port, not 9398. |
 | `EnterpriseManager.CredentialFile` | Where the encrypted credential is stored. |
+| `EnterpriseManager.CredentialScope` | `Machine` encrypts it to the computer, so the task's account can read it without ever signing in. `User` encrypts it to whoever saved it, which then has to be the task's account. |
+| `EnterpriseManager.GrantAccess` | Extra accounts to grant read access on the credential file. `Schedule.RunAsUser` is granted automatically, so this is only for anything else that needs it. |
 | `EnterpriseManager.SkipCertificateCheck` | `true` while EM uses a self-signed certificate. |
 | `Report.Endpoint` | `/api/ZipDownload/DownloadReport`. |
 | `Report.Monthly` | `false` for current consumption, `true` for the archived month. |
@@ -135,21 +137,35 @@ Copy-Item .\VeeamLicenseReport.config.sample.json .\VeeamLicenseReport.config.js
 | `Output.Folder` | Root for the month folders. |
 | `Output.Formats` | `Pdf`, `Json`, or both. |
 | `Output.RetentionMonths` | Month folders older than this are pruned. `0` disables pruning. |
+| `Email.Enabled` | `false` sends nothing. The whole section is ignored, and `-NoEmail` overrides it for one run. |
+| `Email.SmtpServer` | Relay host. |
+| `Email.Port` | Defaults to `25`. |
+| `Email.UseSsl` | `true` for SMTPS on the port above. |
+| `Email.From` | Envelope sender. |
+| `Email.To` | A JSON array, one address per entry. |
+| `Email.Subject` | `{0}` is replaced with the month stamp, for example `2026-11`. |
+| `Email.CredentialFile` | Leave empty for an anonymous relay. Otherwise a credential file in the same format as the Enterprise Manager one, and a separate file from it. |
 | `Schedule.Time` | 24 hour `HH:mm`. |
 | `Schedule.RunAsUser` | The **Windows** account the task logs on as, not the Enterprise Manager login. A domain account is strongly preferred over `SYSTEM`. |
 | `Schedule.LogonType` | `Auto` stores a password and runs unattended. `Interactive` stores none and runs only while that account is signed in. |
 
 ### 2. Store the credential
 
-Run this **as the account the scheduled task will run under, on the server that
-will run it**. DPAPI ties the file to one user on one machine, so a file created
-under your own login will not decrypt under a service account.
+Run this **on the computer that will run the task**.
 
 ```powershell
 .\Invoke-VeeamLicenseUsageReport.ps1 -SaveCredential
 ```
 
-The account needs the **Portal Administrator** role in Enterprise Manager.
+Which account you run it as does not matter, because the credential is
+encrypted to the computer rather than to an account. The machine does matter:
+the file will not decrypt anywhere else, so it has to be created where the task
+runs. Setting `EnterpriseManager.CredentialScope` to `User` brings back
+per-account encryption, and then you are back to having to sign in as the
+task's own account to save it.
+
+You are prompted for the **Enterprise Manager** login, not a Windows one, and
+it needs the **Portal Administrator** role.
 
 Every script here defaults to the same file,
 `C:\ProgramData\VeeamLicenseReport\em.cred`, so a credential saved with one is
@@ -199,19 +215,44 @@ decrypt it, and the run fails. That is why `-SaveCredential` now writes the file
 in **machine scope**: encrypted to the computer instead of to one account, so
 the task's account never has to sign in to save a copy of its own.
 
+With `Schedule.RunAsUser` left at `SYSTEM`, which is the default, two elevated
+commands are the whole of it:
+
 ```powershell
 .\Invoke-VeeamLicenseUsageReport.ps1 -SaveCredential
-.\Invoke-VeeamLicenseUsageReport.ps1 -Install -Server em.contoso.com   # runs as SYSTEM
+.\Invoke-VeeamLicenseUsageReport.ps1 -Install
+```
+
+No Windows password is stored anywhere, because SYSTEM needs none. The same
+thing with the standalone script, where the settings are parameters rather than
+config keys:
+
+```powershell
+.\share\Invoke-VeeamLicenseUsageReport.ps1 -SaveCredential
+.\share\Invoke-VeeamLicenseUsageReport.ps1 -Install -Server em.contoso.com -SkipCertificateCheck
 ```
 
 The trade is real and worth stating plainly: anything running on that computer
 can decrypt a machine scope blob, so the file is the only thing protecting the
 password. `-SaveCredential` therefore strips inherited permissions and grants
-only SYSTEM, the local Administrators group, and the account that saved it. Add
-the task's own account with `-GrantAccess 'CONTOSO\svc-veeam'` when it is
-neither. The blob is still useless on any other computer. If you would rather
-keep per-account protection, `-CredentialScope User` restores the old behaviour,
-and you then have to sign in as the task account to save it.
+only SYSTEM, the local Administrators group, the account that saved it, and
+whatever the task runs as. Anything further goes in
+`EnterpriseManager.GrantAccess`, or `-GrantAccess 'CONTOSO\svc-veeam'` on the
+standalone script. The blob is still useless on any other computer.
+
+If you would rather keep per-account protection, set
+`EnterpriseManager.CredentialScope` to `User`, or pass `-CredentialScope User`.
+You then have to sign in as the task's account to save it, which is the
+constraint machine scope exists to remove.
+
+| | Config file driven | Standalone |
+| --- | --- | --- |
+| Credential location | `EnterpriseManager.CredentialFile` | `-CredentialPath` |
+| Credential protection | `EnterpriseManager.CredentialScope` | `-CredentialScope` |
+| Extra readers | `EnterpriseManager.GrantAccess` | `-GrantAccess` |
+| Task account | `Schedule.RunAsUser` | `-RunAsUser` |
+| How it authenticates | `Schedule.LogonType` | `-TaskLogonType` |
+| Time of day | `Schedule.Time` | `-ScheduleTime` |
 
 ### If the script lives in OneDrive
 
@@ -235,10 +276,10 @@ pinned cloud file and `0x420` is one still open to eviction.
 
 Pick the run-as account to match:
 
-| Situation | `-RunAsUser` | `-TaskLogonType` | Signed in? |
+| Situation | `Schedule.RunAsUser` | `Schedule.LogonType` | Signed in? |
 | --- | --- | --- | --- |
 | Server, dedicated service account | `CONTOSO\svc-veeam` | `Auto` (stores the password) | Not needed |
-| Server, no account to hand | `SYSTEM` (the default) | n/a | Not needed |
+| Server, no account to hand | `SYSTEM` (the default) | ignored | Not needed |
 | Entra joined workstation | the local account | `Interactive` | **Required** |
 
 `Interactive` exists only because a Microsoft Entra joined machine has no domain
@@ -306,7 +347,8 @@ character:
 ```
 
 `{` is machine scope and correct. `<` is the old per-account Clixml, so run
-`-SaveCredential` again.
+`-SaveCredential` again. Use whatever `EnterpriseManager.CredentialFile` says
+if you have moved it.
 
 **The log stops at "Fetching the Enterprise Manager login page".** Network
 rather than permissions. This is where a proxy difference shows, because SYSTEM

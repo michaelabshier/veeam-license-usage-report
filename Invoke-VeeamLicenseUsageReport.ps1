@@ -1212,8 +1212,24 @@ try {
 
         'SaveCredential' {
             $config = Get-ReportConfig -Path $ConfigPath
-            Save-StoredCredential -Path (Get-ConfigValue $config.EnterpriseManager 'CredentialFile') `
-                -GrantTo @([string](Get-ConfigValue (Get-ConfigValue $config 'Schedule') 'RunAsUser' 'SYSTEM'))
+            $em = $config.EnterpriseManager
+
+            $scope = [string](Get-ConfigValue $em 'CredentialScope' 'Machine')
+            if ($scope -notin @('Machine', 'User')) {
+                throw "EnterpriseManager.CredentialScope must be Machine or User. Got '$scope'."
+            }
+
+            # The task's own account is granted automatically, since reading
+            # the credential is the whole reason it exists. GrantAccess is for
+            # anything else that needs it, such as a second service account.
+            $grant = New-Object System.Collections.Generic.List[string]
+            [void]$grant.Add([string](Get-ConfigValue (Get-ConfigValue $config 'Schedule') 'RunAsUser' 'SYSTEM'))
+            foreach ($extra in @(Get-ConfigValue $em 'GrantAccess' @())) {
+                if ($extra) { [void]$grant.Add([string]$extra) }
+            }
+
+            Save-StoredCredential -Path (Get-ConfigValue $em 'CredentialFile') `
+                -Scope $scope -GrantTo $grant.ToArray()
             exit 0
         }
 

@@ -3,6 +3,8 @@
     "Server": "em.contoso.com",
     "Port": 9443,
     "CredentialFile": "C:\\ProgramData\\VeeamLicenseReport\\em.cred",
+    "CredentialScope": "Machine",
+    "GrantAccess": [],
     "SkipCertificateCheck": true
   },
   "Report": {
