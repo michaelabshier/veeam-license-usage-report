@@ -130,7 +130,8 @@ Copy-Item .\VeeamLicenseReport.config.sample.json .\VeeamLicenseReport.config.js
 | `Output.Formats` | `Pdf`, `Json`, or both. |
 | `Output.RetentionMonths` | Month folders older than this are pruned. `0` disables pruning. |
 | `Schedule.Time` | 24 hour `HH:mm`. |
-| `Schedule.RunAsUser` | A domain account is strongly preferred over `SYSTEM`. |
+| `Schedule.RunAsUser` | The **Windows** account the task logs on as, not the Enterprise Manager login. A domain account is strongly preferred over `SYSTEM`. |
+| `Schedule.LogonType` | `Auto` stores a password and runs unattended. `Interactive` stores none and runs only while that account is signed in. |
 
 ### 2. Store the credential
 
@@ -231,7 +232,34 @@ servers:
 - The scheduled task trigger was registered for real: `<Day>Last</Day>` returned
   a next run time of **30 November 2026 22:00**.
 
-### Three traps worth recording
+### Traps worth recording
+
+**The run-as account is a Windows account, not an Enterprise Manager one.**
+These are two different logins and it is easy to pass the wrong one. The
+Enterprise Manager account is prompted for by `-SaveCredential`, stored
+encrypted, and sent over HTTPS at run time. The run-as account is what Windows
+logs the task on as, so it must be an account the machine registering the task
+can resolve. Giving it an Enterprise Manager user name fails with **"No mapping
+between account names and security IDs was done. (26,8):UserId:"**, where 26,8
+is the line and column of `<UserId>` in the task XML. The script now resolves
+the name to a SID up front, writes the SID into the XML rather than the name,
+and refuses to quietly substitute a same-named local account.
+
+**A Microsoft Entra joined workstation cannot cache a task password.** There is
+no domain to authenticate against, so the usual "run whether the user is logged
+on or not" registration has nothing to store. Use `Interactive`, which registers
+an `InteractiveToken` principal that needs no password and fires only while that
+account is signed in. Treat it as a way to try the task out; unattended runs
+belong on a server joined to the service account's domain.
+
+**`schtasks.exe` re-parses `/TR`, so quotes inside it must be escaped.**
+PowerShell wraps a native argument containing spaces in quotes but leaves the
+quotes already inside it alone, so `CommandLineToArgvW` splits the value apart.
+With a path like `...\OneDrive - Veeam Software Corporation\...` the fragment
+` - ` becomes its own token and schtasks answers **"Invalid argument/option -
+'-'"**. Replace `"` with `\"` in the `/TR` value first. Note also that schtasks
+caps `/TR` at 261 characters, which a full command line can easily exceed, so it
+is a poor fallback for anything but a short invocation.
 
 **`MSFT_TaskMonthlyTrigger` cannot express "last day of month".** The CIM class
 has a `RunOnLastDayOfMonth` property and it looks like the right answer, but the

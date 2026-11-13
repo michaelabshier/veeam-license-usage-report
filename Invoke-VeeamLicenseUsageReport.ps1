@@ -754,15 +754,71 @@ function Remove-ExpiredReport {
 # Scheduled task
 # ============================================================================
 
+function Resolve-TaskAccount {
+    # The Windows account the scheduled task runs as. This is NOT the Enterprise
+    # Manager login, which lives in the credential file.
+    #
+    # Task Scheduler resolves <UserId> through LookupAccountName, and that fails
+    # on a user principal name unless this computer can reach that account's
+    # domain. The name is therefore translated to a SID here, and the SID is
+    # what goes into the XML, because a SID always maps.
+    param([Parameter(Mandatory)][string]$Name)
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+    $candidates.Add($Name)
+    if ($Name.Contains('@')) {
+        $at     = $Name.IndexOf('@')
+        $local  = $Name.Substring(0, $at)
+        $domain = $Name.Substring($at + 1)
+        $candidates.Add(('{0}\{1}' -f $domain, $local))
+        if ($domain.Contains('.')) {
+            $candidates.Add(('{0}\{1}' -f $domain.Split('.')[0].ToUpperInvariant(), $local))
+        }
+    }
+    # Deliberately no fall back to this computer's own domain. A local or Entra
+    # account that happens to share the user name is a different principal, and
+    # silently registering the task under it would look like success while
+    # running as somebody else.
+
+    foreach ($candidate in $candidates) {
+        try {
+            $sid = (New-Object System.Security.Principal.NTAccount($candidate)).Translate(
+                [System.Security.Principal.SecurityIdentifier])
+            $resolved = $candidate
+            try { $resolved = $sid.Translate([System.Security.Principal.NTAccount]).Value } catch { }
+            return [pscustomobject]@{ Sid = $sid.Value; Name = $resolved; Supplied = $Name }
+        }
+        catch { }
+    }
+
+    $computerDomain = 'WORKGROUP'
+    try { $computerDomain = (Get-CimInstance Win32_ComputerSystem).Domain } catch { }
+    throw (@(
+        "Windows cannot resolve '$Name' to an account, so the task cannot be registered under it.",
+        "  Tried: $($candidates -join ', ')",
+        "  This computer is $env:COMPUTERNAME in $computerDomain, and it can only resolve accounts from its own domain or its local account database.",
+        '',
+        'Schedule.RunAsUser is the Windows account the scheduled task logs on as. It is not the Enterprise Manager login: that one is held in the credential file and is supplied over HTTPS at run time.',
+        '',
+        'Either install the task on a server joined to the account domain, which is the usual place for it, or run it here under an account this computer knows, by setting Schedule.RunAsUser to',
+        "  $env:USERDOMAIN\$env:USERNAME",
+        'and Schedule.LogonType to Interactive.'
+    ) -join [Environment]::NewLine)
+}
+
 function Install-ReportTask {
     param([Parameter(Mandatory)]$Config, [Parameter(Mandatory)][string]$ResolvedConfigPath)
 
     $schedule = Get-ConfigValue $Config 'Schedule'
     $time     = [string](Get-ConfigValue $schedule 'Time' '22:00')
     $runAs    = [string](Get-ConfigValue $schedule 'RunAsUser' 'SYSTEM')
+    $wantedLogon = [string](Get-ConfigValue $schedule 'LogonType' 'Auto')
 
     if ($time -notmatch '^([01]\d|2[0-3]):[0-5]\d$') {
         throw "Schedule.Time must be 24 hour HH:mm, for example 22:00. Got '$time'."
+    }
+    if ($wantedLogon -notin @('Auto', 'Password', 'Interactive')) {
+        throw "Schedule.LogonType must be Auto, Password or Interactive. Got '$wantedLogon'."
     }
 
     $arguments = '-NoProfile -NonInteractive -ExecutionPolicy Bypass -File "{0}" -ConfigPath "{1}"' -f $PSCommandPath, $ResolvedConfigPath
@@ -773,18 +829,44 @@ function Install-ReportTask {
     # with "The parameter is incorrect", so the XML is written directly.
     $isSystem = $runAs -in @('SYSTEM', 'NT AUTHORITY\SYSTEM', 'S-1-5-18')
     $taskPassword = $null
-    $principalUser = 'S-1-5-18'
+    $principalUser = 'SYSTEM'
+    $principalSid = 'S-1-5-18'
     $logonType = 'ServiceAccount'
 
     if ($isSystem) {
         Write-Log 'The task will run as SYSTEM. The stored Enterprise Manager credential must then be created while running as SYSTEM as well, because DPAPI encryption is per account.' 'WARN'
     }
     else {
-        $taskCred = Get-Credential -UserName $runAs -Message "Password for the scheduled task account $runAs"
-        if (-not $taskCred) { throw 'A password is required to register the task under a named account.' }
-        $taskPassword = $taskCred.GetNetworkCredential().Password
-        $principalUser = $taskCred.UserName
-        $logonType = 'Password'
+        # Resolved before the password prompt, so an account this computer
+        # cannot use fails immediately rather than after typing a password.
+        $account = Resolve-TaskAccount -Name $runAs
+        $principalUser = $account.Name
+        $principalSid = $account.Sid
+        if ($account.Name -ne $runAs) {
+            Write-Log "Resolved '$runAs' to $($account.Name)."
+        }
+
+        $currentSid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+        if ($account.Sid -ne $currentSid) {
+            Write-Log "The task will run as $($account.Name), which is not the account running this install. The credential file is DPAPI encrypted for one account on one computer, so run -SaveCredential while signed in as $($account.Name) on $env:COMPUTERNAME, or the task will not be able to decrypt it." 'WARN'
+        }
+
+        $effectiveLogon = $wantedLogon
+        if ($effectiveLogon -eq 'Auto') { $effectiveLogon = 'Password' }
+
+        if ($effectiveLogon -eq 'Interactive') {
+            # Runs only while that account is signed in, and stores no password.
+            # The only workable form for an account whose password Task
+            # Scheduler cannot cache, such as a Microsoft Entra account.
+            $logonType = 'InteractiveToken'
+            Write-Log "The task will run as $($account.Name) with an interactive token, so it only fires while that account is signed in to $env:COMPUTERNAME." 'WARN'
+        }
+        else {
+            $taskCred = Get-Credential -UserName $account.Name -Message "Windows password for $($account.Name). This is the Windows account the task logs on as, not the Enterprise Manager login."
+            if (-not $taskCred) { throw 'A password is required to register the task under a named account. Set Schedule.LogonType to Interactive to register one that needs no stored password.' }
+            $taskPassword = $taskCred.GetNetworkCredential().Password
+            $logonType = 'Password'
+        }
     }
 
     $xmlEscape = {
@@ -815,7 +897,7 @@ function Install-ReportTask {
   </Triggers>
   <Principals>
     <Principal id="Author">
-      <UserId>$(& $xmlEscape $principalUser)</UserId>
+      <UserId>$principalSid</UserId>
       <LogonType>$logonType</LogonType>
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
@@ -854,7 +936,7 @@ function Install-ReportTask {
         Xml      = $taskXml
         Force    = $true
     }
-    if (-not $isSystem) {
+    if ($taskPassword) {
         $registerArgs['User'] = $principalUser
         $registerArgs['Password'] = $taskPassword
     }
@@ -866,15 +948,31 @@ function Install-ReportTask {
         Write-Log "Registered '$($script:TaskName)'. Next run: $(if ($next) { $next } else { 'see Task Scheduler' })" 'OK'
     }
     catch {
-        Write-Log "Register-ScheduledTask failed ($($_.Exception.Message)). Falling back to schtasks.exe." 'WARN'
+        $registerError = $_.Exception.Message
+        Write-Log "Register-ScheduledTask failed ($registerError). Falling back to schtasks.exe." 'WARN'
+
+        # schtasks.exe re-parses /TR, so the quotes inside it have to survive
+        # CommandLineToArgvW as literal characters. Without the backslash
+        # escape, a path such as "...\OneDrive - Veeam Software..." is split
+        # apart and schtasks rejects the stray '-'.
+        $trCommand = 'powershell.exe ' + $arguments
+        if ($trCommand.Length -gt 261) {
+            throw (@(
+                "Register-ScheduledTask failed: $registerError",
+                "schtasks.exe cannot stand in, because the command line is $($trCommand.Length) characters and schtasks caps /TR at 261.",
+                'Shorten the paths, or register the task from the XML this script builds, rather than working around the registration error.'
+            ) -join [Environment]::NewLine)
+        }
+
         $schtasksArgs = @(
             '/Create', '/TN', $script:TaskName,
-            '/TR', ('powershell.exe ' + $arguments),
+            '/TR', ($trCommand -replace '"', '\"'),
             '/SC', 'MONTHLY', '/MO', 'LASTDAY', '/M', '*',
             '/ST', $time, '/RL', 'HIGHEST', '/F'
         )
-        if ($taskPassword) { $schtasksArgs += @('/RU', $registerArgs['User'], '/RP', $taskPassword) }
-        else { $schtasksArgs += @('/RU', 'SYSTEM') }
+        if ($taskPassword) { $schtasksArgs += @('/RU', $principalUser, '/RP', $taskPassword) }
+        elseif ($isSystem) { $schtasksArgs += @('/RU', 'SYSTEM') }
+        else { $schtasksArgs += @('/RU', $principalUser, '/IT') }
         & schtasks.exe @schtasksArgs
         if ($LASTEXITCODE -ne 0) { throw "schtasks.exe exited with code $LASTEXITCODE." }
         Write-Log 'Registered the task through schtasks.exe.' 'OK'

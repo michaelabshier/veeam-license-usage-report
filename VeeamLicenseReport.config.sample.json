@@ -36,6 +36,7 @@
   },
   "Schedule": {
     "Time": "22:00",
-    "RunAsUser": "CONTOSO\\svc-veeam"
+    "RunAsUser": "CONTOSO\\svc-veeam",
+    "LogonType": "Auto"
   }
 }
