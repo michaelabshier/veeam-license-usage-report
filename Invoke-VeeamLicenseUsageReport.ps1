@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+
 <#
 .SYNOPSIS
     Downloads the aggregated Veeam License Usage Report from Veeam Backup
@@ -68,6 +69,13 @@
     does not replace that; it gives you a month-end snapshot you control, keep
     and can trend.
 #>
+
+# The blank line between #Requires and the comment block above is load bearing.
+# A comment line directly above <# stops Get-Help associating the help with the
+# script: it then reports no parameters at all and falls back to the generated
+# syntax, so every .PARAMETER becomes invisible to anyone who has not opened the
+# file. #Requires is a comment like any other, which is how this went unnoticed.
+# Keep a blank line between any comment and the help block, this one included.
 [CmdletBinding(DefaultParameterSetName = 'Run')]
 param(
     [string]$ConfigPath,

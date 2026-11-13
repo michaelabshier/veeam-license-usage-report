@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+
 <#
 .SYNOPSIS
     Downloads the aggregated License Usage Report from Veeam Backup Enterprise
@@ -58,17 +59,30 @@
     scheduled task cannot answer a prompt.
 
 .PARAMETER CredentialPath
-    Path to a credential file created with Export-Clixml, for unattended runs.
-    Create it once, logged in as the account the scheduled task will run under,
-    on the server that will run it:
+    Path to a stored credential file, for unattended runs. Two formats are
+    read, and the choice decides whether the run needs somebody signed in.
+
+    Machine scope is the one to want. It is encrypted to the computer rather
+    than to an account, so whatever your scheduler runs this as can read it,
+    without that account ever signing in to save a copy of its own. Create it
+    with the companion script:
+
+        .\Invoke-VeeamLicenseUsageReport.ps1 -SaveCredential -CredentialPath <path>
+
+    Add -GrantAccess 'CONTOSO\svc-veeam' when the task runs as an account
+    other than SYSTEM or the one saving the file, so it is granted read access
+    on the way in.
+
+    User scope is the older Export-Clixml format, still read so nothing in
+    place breaks. DPAPI ties it to one Windows account on one machine, so it
+    has to be created by the account that will run this script, which means
+    signing in as that account:
 
         $p = 'C:\ProgramData\VeeamLicenseReport\em.cred'
         New-Item -ItemType Directory -Path (Split-Path $p) -Force
         Get-Credential | Export-Clixml -Path $p
 
-    The file is protected with DPAPI, which ties it to one Windows account on
-    one machine. A file created under your own login will not decrypt under a
-    service account, and will not decrypt on another server.
+    Neither format decrypts on a different computer.
 
 .PARAMETER OutputFolder
     Root folder for the month folders, logs and the history CSV.
@@ -102,6 +116,24 @@
 
 .PARAMETER SmtpServer
     Supply this, with -MailFrom and -MailTo, to email the report after the run.
+
+.PARAMETER SmtpPort
+    Relay port. Defaults to 25.
+
+.PARAMETER SmtpUseSsl
+    Use SMTPS on -SmtpPort.
+
+.PARAMETER MailFrom
+    Envelope sender.
+
+.PARAMETER MailTo
+    One or more recipients. Driven from a scheduler this arrives as a single
+    comma separated string, because powershell.exe -File passes every argument
+    as a literal, so it is expanded back into a list on the way in. Both forms
+    work.
+
+.PARAMETER MailSubject
+    Subject line. `{0}` is replaced with the month stamp, for example 2026-11.
 
 .PARAMETER PassThru
     Emit an object describing the run, including the paths of the files
@@ -165,9 +197,46 @@
 
     Does NOT work: New-ScheduledTaskTrigger, which has no monthly option at all.
 
-    Whichever route you take, set the task to "Run whether user is logged on or
-    not", and run it as an account that can decrypt the credential file, which
-    means the same account that created it.
+    Whichever route you take, set the task to "Run whether user is logged on
+    or not". The account it runs as has to be able to decrypt the credential
+    file: with a machine scope file that is any account on the computer, which
+    is the whole point of it, and with a user scope file it has to be the
+    account that created the file.
+
+    Avoid S4U, the "Do not store password" option. It runs unattended, but the
+    token it produces cannot decrypt user scope DPAPI data, so it breaks the
+    credential file rather than helping.
+
+    FOUR THINGS THAT BITE WHEN YOU WRITE THE TASK YOURSELF
+
+    A SYSTEM task carries no LogonType element at all.
+    <LogonType>ServiceAccount</LogonType> is what the documentation implies,
+    and the Task Scheduler service rejects it with "The task XML contains a
+    value which is incorrectly formatted or out of range.
+    (24,35):LogonType:ServiceAccount", in every combination of UserId and
+    RunLevel. Use <UserId>S-1-5-18</UserId> and leave LogonType out, which is
+    how Windows writes its own SYSTEM tasks.
+
+    schtasks.exe re-parses /TR, so quotes inside it have to be escaped as \".
+    Without that, a path containing " - ", a OneDrive folder for instance, is
+    split apart and schtasks rejects the stray '-'. It also caps /TR at 261
+    characters, which a full command line passes easily.
+
+    Comma separated values arrive as a single string, because powershell.exe
+    -File passes every argument as a literal and does not parse PowerShell
+    syntax. -Formats and -MailTo are expanded again on the way in so both work,
+    but anything you add yourself needs the same treatment. A
+    [ValidateSet('Pdf','Json')] on such a parameter fails with the memorable
+    "the argument "Pdf,Json" does not belong to the set "Pdf,Json"".
+
+    If this script lives in a cloud synced folder, mark it "Always keep on this
+    device". Files On-Demand may evict an unpinned file to reclaim space, and a
+    task running with nobody signed in has no sync client to fetch it back, so
+    the run fails with the script simply unreadable.
+
+    Registering a task is not evidence that it works. All four of these
+    register cleanly and fail on the first real run. Trigger it by hand once
+    and check the exit code and the log before trusting it.
 
     REQUIREMENTS
 
@@ -175,6 +244,13 @@
     web port, and an Enterprise Manager account holding the Portal
     Administrator role.
 #>
+
+# The blank line between #Requires and the comment block above is load bearing.
+# A comment line directly above <# stops Get-Help associating the help with the
+# script: it then reports no parameters at all and falls back to the generated
+# syntax, so every .PARAMETER becomes invisible to anyone who has not opened the
+# file. #Requires is a comment like any other, which is how this went unnoticed.
+# Keep a blank line between any comment and the help block, this one included.
 [CmdletBinding()]
 param(
     [Parameter(Mandatory)]

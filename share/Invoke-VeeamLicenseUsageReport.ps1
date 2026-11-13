@@ -1,4 +1,5 @@
 #Requires -Version 5.1
+
 <#
 .SYNOPSIS
     Downloads the aggregated License Usage Report from Veeam Backup Enterprise
@@ -81,6 +82,37 @@
 
 .PARAMETER SmtpServer
     Supply this, with -MailFrom and -MailTo, to email the report after a run.
+
+.PARAMETER SmtpPort
+    Relay port. Defaults to 25.
+
+.PARAMETER SmtpUseSsl
+    Use SMTPS on -SmtpPort.
+
+.PARAMETER MailFrom
+    Envelope sender.
+
+.PARAMETER MailTo
+    One or more recipients. Written into a scheduled task this becomes a
+    single comma separated string, because powershell.exe -File passes every
+    argument as a literal, so it is expanded back into a list on the way in.
+    Both forms work.
+
+.PARAMETER MailSubject
+    Subject line. `{0}` is replaced with the month stamp, for example 2026-11.
+
+.PARAMETER NoEmail
+    Skip the email for this run, whatever the SMTP parameters say. Useful for
+    an ad hoc run that should not notify anyone.
+
+.PARAMETER TaskName
+    Name of the scheduled task, used by -Install and -Uninstall. Change it
+    only if you intend to run more than one of these side by side, and change
+    it consistently, since -Uninstall finds the task by this name.
+
+.PARAMETER ScheduleTime
+    24 hour HH:mm for the task, on the last day of each month. Defaults to
+    22:00.
 
 .PARAMETER SaveCredential
     Prompt for the Enterprise Manager credential and store it encrypted at
@@ -179,6 +211,13 @@
     Exit codes: 0 success, 1 failure. Task Scheduler surfaces this as the task's
     last result, so it can be monitored.
 #>
+
+# The blank line between #Requires and the comment block above is load bearing.
+# A comment line directly above <# stops Get-Help associating the help with the
+# script: it then reports no parameters at all and falls back to the generated
+# syntax, so every .PARAMETER becomes invisible to anyone who has not opened the
+# file. #Requires is a comment like any other, which is how this went unnoticed.
+# Keep a blank line between any comment and the help block, this one included.
 [CmdletBinding(DefaultParameterSetName = 'Run')]
 param(
     [Parameter(ParameterSetName = 'Run', Mandatory)]

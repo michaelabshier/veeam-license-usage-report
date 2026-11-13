@@ -464,6 +464,17 @@ fine, reports **Ready**, and then exits 1 on its first run before it can even
 open a log file. Array parameters are now normalised in the script rather than
 validated by attribute, so both forms work.
 
+**A comment line directly above `<#` makes `Get-Help` ignore the whole help
+block.** All three scripts opened with `#Requires -Version 5.1` on the line
+immediately before their comment based help, and `#Requires` is a comment like
+any other, so `Get-Help` never associated the help with the script. It reported
+no parameters at all and fell back to the generated syntax, which looks enough
+like help that nobody notices. Every `.PARAMETER` was readable only by opening
+the file. A single blank line between the two fixes it, and the fix is easy to
+undo by accident: adding an ordinary comment above `<#` breaks it again, which
+is exactly what happened while fixing it here. The check that catches it is
+whether `(Get-Help .\script.ps1 -Full).parameters` is null.
+
 **A SYSTEM task must carry no `LogonType` element at all.** `ServiceAccount`
 is the value the documentation implies and the Task Scheduler service rejects
 it outright, with *(24,35):LogonType:ServiceAccount*, in every combination of
