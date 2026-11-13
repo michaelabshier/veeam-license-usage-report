@@ -1084,7 +1084,7 @@ function Install-ReportTask {
     $logonType = 'ServiceAccount'
 
     if ($isSystem) {
-        Write-Log 'The task will run as SYSTEM, so the stored credential must also have been created while running as SYSTEM, because DPAPI encryption is per account. A dedicated domain service account is usually simpler.' 'WARN'
+        Write-Log 'The task will run as SYSTEM, so it needs no stored Windows password and runs with nobody signed in. Save the credential with -SaveCredential in its default machine scope: a user scope file saved by a person cannot be decrypted by SYSTEM.' 'WARN'
     }
     else {
         # Resolved before the password prompt, so an account this computer
@@ -1124,6 +1124,14 @@ function Install-ReportTask {
         $Text.Replace('&', '&amp;').Replace('<', '&lt;').Replace('>', '&gt;')
     }
 
+    # A SYSTEM task carries no LogonType element at all. The Task Scheduler
+    # service rejects <LogonType>ServiceAccount</LogonType> outright, with
+    # "The task XML contains a value which is incorrectly formatted or out of
+    # range. (24,35):LogonType:ServiceAccount", in every combination of UserId
+    # and RunLevel tried. Windows writes its own SYSTEM tasks with the element
+    # absent, so this does the same.
+    $logonElement = if ($isSystem) { '' } else { "`n      <LogonType>$logonType</LogonType>" }
+
     $taskXml = @"
 <?xml version="1.0" encoding="UTF-16"?>
 <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
@@ -1147,8 +1155,7 @@ function Install-ReportTask {
   </Triggers>
   <Principals>
     <Principal id="Author">
-      <UserId>$principalSid</UserId>
-      <LogonType>$logonType</LogonType>
+      <UserId>$principalSid</UserId>$logonElement
       <RunLevel>HighestAvailable</RunLevel>
     </Principal>
   </Principals>

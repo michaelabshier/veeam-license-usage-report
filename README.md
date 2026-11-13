@@ -312,6 +312,12 @@ fine, reports **Ready**, and then exits 1 on its first run before it can even
 open a log file. Array parameters are now normalised in the script rather than
 validated by attribute, so both forms work.
 
+**A SYSTEM task must carry no `LogonType` element at all.** `ServiceAccount`
+is the value the documentation implies and the Task Scheduler service rejects
+it outright, with *(24,35):LogonType:ServiceAccount*, in every combination of
+`UserId` and `RunLevel`. Omitting the element succeeds, and that is how Windows
+writes its own SYSTEM tasks: `S-1-5-18` as `UserId` and no `LogonType`.
+
 **`schtasks.exe` re-parses `/TR`, so quotes inside it must be escaped.**
 PowerShell wraps a native argument containing spaces in quotes but leaves the
 quotes already inside it alone, so `CommandLineToArgvW` splits the value apart.
