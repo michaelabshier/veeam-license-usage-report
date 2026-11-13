@@ -258,6 +258,16 @@ an `InteractiveToken` principal that needs no password and fires only while that
 account is signed in. Treat it as a way to try the task out; unattended runs
 belong on a server joined to the service account's domain.
 
+**`powershell.exe -File` does not parse PowerShell syntax, so `-Formats
+Pdf,Json` is one string.** Run interactively, that argument becomes a two
+element array. Passed through `-File`, as every scheduled task does, it arrives
+as the single string `Pdf,Json`, which fails a `[ValidateSet('Pdf','Json')]`
+with the memorable message *the argument "Pdf,Json" does not belong to the set
+"Pdf,Json"*, because the set is printed comma joined too. The task registers
+fine, reports **Ready**, and then exits 1 on its first run before it can even
+open a log file. Array parameters are now normalised in the script rather than
+validated by attribute, so both forms work.
+
 **`schtasks.exe` re-parses `/TR`, so quotes inside it must be escaped.**
 PowerShell wraps a native argument containing spaces in quotes but leaves the
 quotes already inside it alone, so `CommandLineToArgvW` splits the value apart.

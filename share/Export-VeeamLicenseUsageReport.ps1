@@ -189,7 +189,10 @@ param(
 
     [string]$OutputFolder = 'C:\VeeamLicenseReports',
 
-    [ValidateSet('Pdf', 'Json')]
+    # No ValidateSet here. powershell.exe -File passes every argument as a
+    # literal string, so a scheduled task's "-Formats Pdf,Json" arrives as a
+    # single element and fails validation against the very set it looks like.
+    # Normalised and checked just below instead.
     [string[]]$Formats = @('Pdf', 'Json'),
 
     [switch]$Monthly,
@@ -212,6 +215,30 @@ param(
 
 Set-StrictMode -Version 2.0
 $ErrorActionPreference = 'Stop'
+
+# powershell.exe -File does not parse PowerShell syntax. A comma separated
+# value arrives as one string, while an interactive run passes a real array.
+# Both are normalised to the same shape here, before anything reads them.
+# This matters most for this script, which is built to be driven by an
+# external scheduler.
+function Expand-CommaList {
+    param([string[]]$Value)
+    if (-not $Value) { return @() }
+    return @($Value |
+        ForEach-Object { $_ -split ',' } |
+        ForEach-Object { $_.Trim() } |
+        Where-Object { $_ })
+}
+
+$Formats = @(Expand-CommaList $Formats | ForEach-Object {
+    switch ($_.ToLowerInvariant()) {
+        'pdf'   { 'Pdf' }
+        'json'  { 'Json' }
+        default { throw "-Formats accepts Pdf and Json, separated by a comma. Got '$_'." }
+    }
+})
+if ($Formats.Count -eq 0) { throw '-Formats needs at least one of Pdf or Json.' }
+$MailTo = Expand-CommaList $MailTo
 
 $script:LogFile = $null
 $script:WebArgs = @{ UseBasicParsing = $true }
