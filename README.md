@@ -207,6 +207,26 @@ neither. The blob is still useless on any other computer. If you would rather
 keep per-account protection, `-CredentialScope User` restores the old behaviour,
 and you then have to sign in as the task account to save it.
 
+### If the script lives in OneDrive
+
+It can, and `-Install` handles it. Files On-Demand is allowed to evict an
+unpinned file's contents to reclaim space, leaving a placeholder behind. That
+is fine while you are signed in, because the sync client fetches it back on
+access, but a task running with nobody signed in has no sync client to do that
+and fails with the script simply unreadable. It is a failure that appears
+months later and looks random.
+
+`-Install` therefore pins the script, the same thing as **Always keep on this
+device** in Explorer, and the config driven script pins its config file too. A
+file that is not a cloud placeholder is left alone. You can check it by hand:
+
+```powershell
+'0x{0:X}' -f [int](Get-Item .\Invoke-VeeamLicenseUsageReport.ps1 -Force).Attributes
+```
+
+`0x400` is the placeholder bit and `0x80000` is pinned, so `0x80420` is a
+pinned cloud file and `0x420` is one still open to eviction.
+
 Pick the run-as account to match:
 
 | Situation | `-RunAsUser` | `-TaskLogonType` | Signed in? |

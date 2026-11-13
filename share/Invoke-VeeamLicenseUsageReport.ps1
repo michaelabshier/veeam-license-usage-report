@@ -1039,9 +1039,49 @@ function Resolve-TaskAccount {
     ) -join [Environment]::NewLine)
 }
 
+function Protect-ScriptAvailability {
+    # The script can legitimately live in a OneDrive or other cloud synced
+    # folder. Files On-Demand may evict an unpinned file's contents to reclaim
+    # space, and when the task fires with nobody signed in there is no sync
+    # client running to fetch it back, so the run fails with the script simply
+    # unreadable. Marking the file pinned, which is what "Always keep on this
+    # device" does in Explorer, prevents the eviction. On a path that is not a
+    # cloud placeholder this does nothing.
+    param([Parameter(Mandatory)][string]$Path)
+
+    $REPARSE_POINT = 0x400
+    $PINNED        = 0x80000
+
+    try {
+        $attr = [int](Get-Item -LiteralPath $Path -Force).Attributes
+        if (-not ($attr -band $REPARSE_POINT)) { return }
+
+        if ($attr -band $PINNED) {
+            Write-Log 'The script sits in a cloud synced folder and is already pinned, so it stays on this disk.'
+            return
+        }
+
+        # +P sets the pinned attribute, -U clears the unpinned one. They are
+        # separate flags and a file can carry neither, which is the evictable
+        # state this is here to fix.
+        & attrib.exe +P -U $Path 2>&1 | Out-Null
+
+        if ([int](Get-Item -LiteralPath $Path -Force).Attributes -band $PINNED) {
+            Write-Log 'The script sits in a cloud synced folder, so it has been pinned to this disk. Without that, Files On-Demand can evict it and the task then fails when it runs with nobody signed in.' 'OK'
+        }
+        else {
+            Write-Log "The script sits in a cloud synced folder and could not be pinned. Set 'Always keep on this device' on it in Explorer, or keep the copy the task runs outside the synced folder, otherwise the task will fail once the file is evicted." 'WARN'
+        }
+    }
+    catch {
+        Write-Log "Could not confirm that $Path stays available offline ($($_.Exception.Message))." 'WARN'
+    }
+}
+
 function Install-ReportTask {
     # Rebuilds the current invocation as a command line and writes it into the
     # task, so the task runs with exactly the settings used here.
+    Protect-ScriptAvailability -Path $PSCommandPath
     $quoted = {
         param([string]$Value)
         '"' + ($Value -replace '"', '\"') + '"'
