@@ -1,0 +1,23 @@
+# Live configuration. Holds environment-specific hostnames, SMTP servers and
+# recipient addresses, so it stays local. Copy the sample to this name and edit:
+#   Copy-Item VeeamLicenseReport.config.sample.json VeeamLicenseReport.config.json
+VeeamLicenseReport.config.json
+
+# Stored credentials. These are DPAPI blobs and must never be committed.
+*.cred
+*.credential
+
+# Generated report output, in case anyone points OutputFolder at the repo.
+VeeamLicenseReports/
+_logs/
+*.pdf
+LicenseSummary_*.json
+VeeamLicenseUsageReport_*.json
+LicenseUsage_History.csv
+
+# Editor and OS noise
+.vs/
+.vscode/
+*.swp
+Thumbs.db
+desktop.ini

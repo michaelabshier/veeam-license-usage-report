@@ -1,0 +1,41 @@
+{
+  "EnterpriseManager": {
+    "Server": "em.contoso.com",
+    "Port": 9443,
+    "CredentialFile": "C:\\ProgramData\\VeeamLicenseReport\\em.cred",
+    "SkipCertificateCheck": true
+  },
+  "Report": {
+    "Endpoint": "/api/ZipDownload/DownloadReport",
+    "Monthly": false,
+    "FormatParameter": "format",
+    "SendTimezoneOffset": true,
+    "ExtraQuery": {
+      "isAdjusted": "1"
+    }
+  },
+  "Output": {
+    "Folder": "C:\\VeeamLicenseReports",
+    "Formats": [
+      "Pdf",
+      "Json"
+    ],
+    "RetentionMonths": 24
+  },
+  "Email": {
+    "Enabled": false,
+    "SmtpServer": "smtp.contoso.com",
+    "Port": 25,
+    "UseSsl": false,
+    "From": "veeam-reports@contoso.com",
+    "To": [
+      "licensing@contoso.com"
+    ],
+    "Subject": "Veeam license usage report, {0}",
+    "CredentialFile": ""
+  },
+  "Schedule": {
+    "Time": "22:00",
+    "RunAsUser": "CONTOSO\\svc-veeam"
+  }
+}
