@@ -484,7 +484,7 @@ writes its own SYSTEM tasks: `S-1-5-18` as `UserId` and no `LogonType`.
 **`schtasks.exe` re-parses `/TR`, so quotes inside it must be escaped.**
 PowerShell wraps a native argument containing spaces in quotes but leaves the
 quotes already inside it alone, so `CommandLineToArgvW` splits the value apart.
-With a path like `...\OneDrive - Veeam Software Corporation\...` the fragment
+With a path like `...\OneDrive - Contoso Ltd\...` the fragment
 ` - ` becomes its own token and schtasks answers **"Invalid argument/option -
 '-'"**. Replace `"` with `\"` in the `/TR` value first. Note also that schtasks
 caps `/TR` at 261 characters, which a full command line can easily exceed, so it
@@ -494,9 +494,27 @@ is a poor fallback for anything but a short invocation.
 has a `RunOnLastDayOfMonth` property and it looks like the right answer, but the
 Task Scheduler service rejects such a trigger with "The parameter is incorrect",
 with or without `DaysOfMonth` set. Note also the property is `MonthOfYear`,
-singular. The script writes the task XML directly with
-`<DaysOfMonth><Day>Last</Day></DaysOfMonth>`, the only accepted form, keeping
-`schtasks.exe /SC MONTHLY /MO LASTDAY /M *` as a fallback.
+singular. `New-ScheduledTaskTrigger` is no help either: it has no monthly
+option at all. Three forms do work, and they are the three to reach for when
+wiring this into a scheduler yourself:
+
+```
+schtasks  /SC MONTHLY /MO LASTDAY /M *
+GUI       New Trigger > Monthly > Months: all
+                      > Days: scroll to the end and tick "Last"
+task XML  <ScheduleByMonth>
+            <DaysOfMonth><Day>Last</Day></DaysOfMonth>
+            <Months><January/>...<December/></Months>
+          </ScheduleByMonth>
+```
+
+The scripts write the XML directly, keeping `schtasks.exe` as a fallback.
+
+**Registering a task is not evidence that it works.** Most of the failures on
+this page register cleanly, report **Ready** with a plausible next run time,
+and fail on the first real run, some of them before they can even open a log
+file. Trigger it by hand once and check the exit code and the log. See
+[Checking a run](#checking-a-run).
 
 **`-like '*?*'` does not test for a question mark.** In a wildcard pattern `?`
 matches any single character, so that test matches every non-empty string. This

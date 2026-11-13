@@ -206,10 +206,26 @@
 .NOTES
     Requires Windows PowerShell 5.1 or later, network access to the Enterprise
     Manager web port, and an Enterprise Manager account holding the Portal
-    Administrator role.
+    Administrator role. -Install and -Uninstall need an elevated session.
 
     Exit codes: 0 success, 1 failure. Task Scheduler surfaces this as the task's
     last result, so it can be monitored.
+
+    BEFORE YOU CHANGE ANYTHING ABOUT THE SCHEDULING OR THE CREDENTIAL
+
+    Read "Traps worth recording" in README.md. The failures worth knowing about
+    all share a shape: the task registers cleanly, reports Ready with a
+    plausible next run time, and fails on the first real run, several of them
+    before they can open a log file. The SYSTEM principal that rejects the
+    LogonType the documentation implies, schtasks mangling the quotes inside
+    its own /TR argument, comma separated values arriving as a single string,
+    S4U breaking the credential file, and cloud synced folders evicting this
+    script are all recorded there, with their symptoms, so there is one copy to
+    correct when one of them turns out to be wrong.
+
+    Registration proves nothing. Trigger the task by hand once and check its
+    exit code and the log. README.md, under "Checking a run", gives the
+    commands and how to read the result.
 #>
 
 # The blank line between #Requires and the comment block above is load bearing.

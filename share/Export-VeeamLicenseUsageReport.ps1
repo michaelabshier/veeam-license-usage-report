@@ -169,74 +169,43 @@
 .NOTES
     SCHEDULING THIS ON THE LAST DAY OF THE MONTH
 
-    Two of the three obvious ways to do this are wrong, so it is worth being
-    explicit.
-
-    Works, from the command line:
+    This script does no scheduling of its own. Three forms express "the last
+    day" correctly, and they are the ones to use:
 
         schtasks /Create /TN "Veeam License Usage Report" ^
                  /SC MONTHLY /MO LASTDAY /M * /ST 22:00 ...
 
-    Works, in the Task Scheduler GUI:
+        GUI: New Trigger > Monthly > Months: select all
+                         > Days: scroll to the end of the list and tick "Last"
 
-        New Trigger > Monthly > Months: select all
-                    > Days: scroll to the end of the list and tick "Last"
+        XML: <ScheduleByMonth>
+               <DaysOfMonth><Day>Last</Day></DaysOfMonth>
+               <Months><January/>...<December/></Months>
+             </ScheduleByMonth>
 
-    Works, in task XML:
+    Set the task to "Run whether user is logged on or not". The account it runs
+    as has to be able to decrypt the credential file: with a machine scope file
+    that is any account on the computer, which is the whole point of it, and
+    with a user scope file it has to be the account that created the file.
 
-        <ScheduleByMonth>
-          <DaysOfMonth><Day>Last</Day></DaysOfMonth>
-          <Months><January/>...<December/></Months>
-        </ScheduleByMonth>
+    BEFORE YOU WIRE THIS INTO A SCHEDULER
 
-    Does NOT work: building the trigger from the MSFT_TaskMonthlyTrigger CIM
-    class and setting its RunOnLastDayOfMonth property. The class exposes the
-    property, but the Task Scheduler service rejects the resulting trigger with
-    "The parameter is incorrect", with or without DaysOfMonth also set. Note
-    too that the property is MonthOfYear, singular, not MonthsOfYear.
+    Read "Traps worth recording" in README.md. Several ways of doing the above
+    register cleanly, report Ready with a plausible next run time, and then
+    fail on the first real run, some of them before they can open a log file:
+    the CIM trigger class that cannot express the last day, the SYSTEM
+    principal that rejects the LogonType the documentation implies, schtasks
+    mangling the quotes inside its own /TR argument, comma separated values
+    arriving as a single string, S4U breaking the credential file, and cloud
+    synced folders evicting this script out from under the task. They are
+    recorded there rather than repeated here, so there is one copy to correct
+    when one of them turns out to be wrong.
 
-    Does NOT work: New-ScheduledTaskTrigger, which has no monthly option at all.
+    Whatever route you take, trigger the task by hand once and check its exit
+    code and the log. Registration proves nothing.
 
-    Whichever route you take, set the task to "Run whether user is logged on
-    or not". The account it runs as has to be able to decrypt the credential
-    file: with a machine scope file that is any account on the computer, which
-    is the whole point of it, and with a user scope file it has to be the
-    account that created the file.
-
-    Avoid S4U, the "Do not store password" option. It runs unattended, but the
-    token it produces cannot decrypt user scope DPAPI data, so it breaks the
-    credential file rather than helping.
-
-    FOUR THINGS THAT BITE WHEN YOU WRITE THE TASK YOURSELF
-
-    A SYSTEM task carries no LogonType element at all.
-    <LogonType>ServiceAccount</LogonType> is what the documentation implies,
-    and the Task Scheduler service rejects it with "The task XML contains a
-    value which is incorrectly formatted or out of range.
-    (24,35):LogonType:ServiceAccount", in every combination of UserId and
-    RunLevel. Use <UserId>S-1-5-18</UserId> and leave LogonType out, which is
-    how Windows writes its own SYSTEM tasks.
-
-    schtasks.exe re-parses /TR, so quotes inside it have to be escaped as \".
-    Without that, a path containing " - ", a OneDrive folder for instance, is
-    split apart and schtasks rejects the stray '-'. It also caps /TR at 261
-    characters, which a full command line passes easily.
-
-    Comma separated values arrive as a single string, because powershell.exe
-    -File passes every argument as a literal and does not parse PowerShell
-    syntax. -Formats and -MailTo are expanded again on the way in so both work,
-    but anything you add yourself needs the same treatment. A
-    [ValidateSet('Pdf','Json')] on such a parameter fails with the memorable
-    "the argument "Pdf,Json" does not belong to the set "Pdf,Json"".
-
-    If this script lives in a cloud synced folder, mark it "Always keep on this
-    device". Files On-Demand may evict an unpinned file to reclaim space, and a
-    task running with nobody signed in has no sync client to fetch it back, so
-    the run fails with the script simply unreadable.
-
-    Registering a task is not evidence that it works. All four of these
-    register cleanly and fail on the first real run. Trigger it by hand once
-    and check the exit code and the log before trusting it.
+    If this file reached you on its own, ask for README.md too. It is where
+    those failure modes and their symptoms are written down.
 
     REQUIREMENTS
 

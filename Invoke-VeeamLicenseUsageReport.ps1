@@ -143,35 +143,21 @@
 
     RUNNING WITH NOBODY SIGNED IN
 
-    This turns on the credential file rather than the trigger. DPAPI encrypts
-    per account by default, so a credential saved by a person cannot be read by
-    SYSTEM or by a service account and the run fails. CredentialScope defaults
-    to Machine to remove that, at the cost that anything on the computer can
-    decrypt the file, which is why -SaveCredential strips inherited permissions
-    and grants only SYSTEM, Administrators, the saving account and the task's.
+    This turns on the credential file rather than the trigger: CredentialScope
+    has to be Machine so the task's account can decrypt it without ever signing
+    in. README.md, under "Running with nobody signed in", covers the trade that
+    makes, which account to run as, and why S4U is not the shortcut it looks
+    like.
 
-    Avoid S4U, the "Do not store password" option. It runs unattended but its
-    token cannot decrypt user scope DPAPI data, so it breaks the credential
-    file rather than helping.
+    BEFORE YOU CHANGE ANYTHING ABOUT THE SCHEDULING
 
-    THINGS THAT BITE
-
-    A SYSTEM task carries no LogonType element at all. ServiceAccount is what
-    the documentation implies and the Task Scheduler service rejects it.
-
-    MSFT_TaskMonthlyTrigger cannot express "last day of month" despite having a
-    RunOnLastDayOfMonth property. The task XML is written directly instead.
-
-    Comma separated values arrive as one string through powershell.exe -File,
-    which does not parse PowerShell syntax. Output.Formats comes from JSON so
-    it is unaffected here, but it governs the standalone scripts.
-
-    If this script or its config file lives in a cloud synced folder, -Install
-    pins both, since Files On-Demand can otherwise evict them and a task
-    running with nobody signed in has no sync client to fetch them back.
-
-    Registering a task is not evidence that it works. Trigger it once by hand
-    and check the exit code and the log before trusting it.
+    README.md, under "Traps worth recording", lists the ways this fails that
+    look like success: tasks that register cleanly and then fail on the first
+    run, a SYSTEM principal that rejects the LogonType the documentation
+    implies, schtasks mangling its own arguments, comma separated values
+    arriving as a single string, and cloud synced folders evicting the script
+    out from under a task. They are kept there rather than repeated here so
+    there is one copy to correct when one of them turns out to be wrong.
 
     WHY THE LAST DAY
 
