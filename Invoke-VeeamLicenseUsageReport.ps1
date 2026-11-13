@@ -34,9 +34,18 @@
 
 .PARAMETER SaveCredential
     Prompts for the Enterprise Manager credential and stores it encrypted at
-    EnterpriseManager.CredentialFile. Run this as the same Windows account the
-    scheduled task will run under, on the same machine: DPAPI ties the file to
-    one user on one computer.
+    EnterpriseManager.CredentialFile.
+
+    Run it on the computer that will run the task. Which account you run it as
+    does not matter, because EnterpriseManager.CredentialScope defaults to
+    Machine: the credential is encrypted to the computer rather than to an
+    account, so whatever the task runs as can read it without that account
+    ever signing in. Set that key to User for the older per-account
+    encryption, and you are back to having to sign in as the task's own
+    account to save it. Neither form decrypts on a different computer.
+
+    You are prompted for the Enterprise Manager login, not a Windows one, and
+    it needs the Portal Administrator role.
 
 .PARAMETER TestConnection
     Signs in, confirms the report endpoint responds with a real document, and
@@ -55,11 +64,117 @@
 
 .EXAMPLE
     .\Invoke-VeeamLicenseUsageReport.ps1 -SaveCredential
+
+    Store the Enterprise Manager credential. Do this once, on the computer that
+    will run the task, before anything else.
+
+.EXAMPLE
     .\Invoke-VeeamLicenseUsageReport.ps1 -TestConnection
+
+    Sign in, fetch the licensing summary, generate the report and confirm a
+    real document comes back. Saves nothing. Run it after setup, and after
+    every Veeam upgrade, since the interface is undocumented.
+
+.EXAMPLE
     .\Invoke-VeeamLicenseUsageReport.ps1
+
+    Run once now, writing to Output.Folder. It warns when run mid-month, which
+    is expected for an ad hoc run.
+
+.EXAMPLE
+    .\Invoke-VeeamLicenseUsageReport.ps1 -NoEmail
+
+    The same, without sending mail, whatever the Email section says.
+
+.EXAMPLE
     .\Invoke-VeeamLicenseUsageReport.ps1 -Install
 
+    Register the scheduled task for the last day of every month. Needs an
+    elevated session. With Schedule.RunAsUser left at SYSTEM the task stores no
+    Windows password and runs with nobody signed in.
+
 .NOTES
+    CONFIGURATION FILE
+
+    Everything other than the switches above lives in the JSON file. Copy
+    VeeamLicenseReport.config.sample.json and edit it.
+
+    EnterpriseManager
+      Server                Enterprise Manager FQDN.
+      Port                  9443, the web app port, not 9398.
+      CredentialFile        Where the encrypted credential is stored.
+      CredentialScope       Machine encrypts it to the computer, so the task's
+                            account reads it without ever signing in. User
+                            encrypts it to whoever saved it.
+      GrantAccess           Extra accounts granted read access on that file.
+                            Schedule.RunAsUser is granted automatically.
+      SkipCertificateCheck  true while Enterprise Manager uses its self-signed
+                            certificate.
+
+    Report
+      Endpoint              /api/ZipDownload/DownloadReport.
+      Monthly               false for current consumption, true for the
+                            archived report covering the month just ended.
+      FormatParameter       format.
+      ExtraQuery            isAdjusted: "1", matching what the UI sends.
+      SendTimezoneOffset    Adds timezoneOffset, computed from this host.
+
+    Output
+      Folder                Root for the month folders, logs and history CSV.
+      Formats               Pdf, Json, or both.
+      RetentionMonths       Month folders older than this are pruned. 0
+                            disables pruning.
+
+    Email
+      Enabled               false sends nothing and ignores the rest.
+      SmtpServer, Port, UseSsl, From, To
+      Subject               {0} is replaced with the month stamp, e.g. 2026-11.
+      CredentialFile        Empty for an anonymous relay. Otherwise a separate
+                            credential file from the Enterprise Manager one.
+
+    Schedule
+      Time                  24 hour HH:mm.
+      RunAsUser             The Windows account the task logs on as, not the
+                            Enterprise Manager login. SYSTEM by default, which
+                            needs no stored password.
+      LogonType             Auto stores a password and runs unattended.
+                            Interactive stores none and runs only while that
+                            account is signed in.
+
+    RUNNING WITH NOBODY SIGNED IN
+
+    This turns on the credential file rather than the trigger. DPAPI encrypts
+    per account by default, so a credential saved by a person cannot be read by
+    SYSTEM or by a service account and the run fails. CredentialScope defaults
+    to Machine to remove that, at the cost that anything on the computer can
+    decrypt the file, which is why -SaveCredential strips inherited permissions
+    and grants only SYSTEM, Administrators, the saving account and the task's.
+
+    Avoid S4U, the "Do not store password" option. It runs unattended but its
+    token cannot decrypt user scope DPAPI data, so it breaks the credential
+    file rather than helping.
+
+    THINGS THAT BITE
+
+    A SYSTEM task carries no LogonType element at all. ServiceAccount is what
+    the documentation implies and the Task Scheduler service rejects it.
+
+    MSFT_TaskMonthlyTrigger cannot express "last day of month" despite having a
+    RunOnLastDayOfMonth property. The task XML is written directly instead.
+
+    Comma separated values arrive as one string through powershell.exe -File,
+    which does not parse PowerShell syntax. Output.Formats comes from JSON so
+    it is unaffected here, but it governs the standalone scripts.
+
+    If this script or its config file lives in a cloud synced folder, -Install
+    pins both, since Files On-Demand can otherwise evict them and a task
+    running with nobody signed in has no sync client to fetch them back.
+
+    Registering a task is not evidence that it works. Trigger it once by hand
+    and check the exit code and the log before trusting it.
+
+    WHY THE LAST DAY
+
     The report reflects current license consumption at the moment it runs,
     which is why the task is scheduled for the last day of the month: that is
     what makes the output a month-end snapshot.
@@ -67,7 +182,14 @@
     Enterprise Manager separately generates its own official monthly usage
     report on the first day of each month for the month just ended. This script
     does not replace that; it gives you a month-end snapshot you control, keep
-    and can trend.
+    and can trend. Set Report.Monthly to true, and move Schedule.Time to early
+    in the month, to fetch Veeam's own archived report instead.
+
+    REQUIREMENTS
+
+    Windows PowerShell 5.1, network access to the Enterprise Manager web port,
+    and an Enterprise Manager account holding the Portal Administrator role.
+    -Install and -Uninstall need an elevated session.
 #>
 
 # The blank line between #Requires and the comment block above is load bearing.
