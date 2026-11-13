@@ -1,0 +1,12 @@
+# The hook is run by sh. With CRLF endings the shebang becomes "#!/bin/sh\r",
+# which fails as a bad interpreter, so this one must stay LF whatever the
+# platform's checkout default is.
+hooks/* text eol=lf
+*.sh    text eol=lf
+
+# PowerShell is content either way; pinning CRLF just stops the working tree
+# churning on every checkout on Windows.
+*.ps1   text eol=crlf
+
+*.md    text
+*.json  text

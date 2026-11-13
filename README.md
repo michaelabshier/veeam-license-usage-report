@@ -15,6 +15,8 @@ per-backup-server sections and their per-VM detail.
 | `VeeamLicenseReport.config.sample.json` | Copy to `VeeamLicenseReport.config.json` and edit. |
 | `share/Invoke-VeeamLicenseUsageReport.ps1` | The same thing with no config file: every setting is a parameter, and `-Install` writes them into the task. Self contained, so it is the one to hand to someone else. |
 | `share/Export-VeeamLicenseUsageReport.ps1` | Run once, no scheduling of its own, for driving from a scheduler you already have. Returns an object with `-PassThru`. |
+| `Test-Documentation.ps1` | Asserts this README still records every failure mode the scripts point at, that their help is reachable, and that nothing names the lab. Exits non-zero on failure. |
+| `hooks/pre-commit` | Runs that check and refuses the commit if it fails. |
 
 The three share the same credential file and the same output layout, so they can
 be mixed. Setup below is written against the config file driven script; for the
@@ -358,6 +360,37 @@ configuration instead:
 ```powershell
 netsh winhttp show proxy
 ```
+
+### Keeping this file honest
+
+The scripts no longer repeat the traps below; they point here. That only works
+while this file still contains them, so it is checked rather than trusted:
+
+```powershell
+.\Test-Documentation.ps1
+```
+
+It asserts that all sixteen failure modes still appear here, that each script
+references this README, that `Get-Help` can actually read each script's help
+and renders every parameter with a description, and that no tracked file names
+the lab or anyone in particular. It exits non-zero on failure.
+
+Enable the hook once per clone, so it runs on every commit:
+
+```powershell
+git config core.hooksPath hooks
+```
+
+`git commit --no-verify` bypasses it, which is right for committing work in
+progress on purpose and wrong for making a failure go away. The hook reads file
+names from the index, so staged additions are covered, but reads their contents
+from the working tree, and says so when unstaged changes are present.
+
+Two things it is worth knowing it was built to catch, because both happened
+here. A credential path documented in one place and defaulted differently in
+another produced a task that registered cleanly and failed on its first run.
+And an identifier scan that printed its result without acting on it let a
+developer's profile path into a commit, which is why this one sets an exit code.
 
 ## Output layout
 

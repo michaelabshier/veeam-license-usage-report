@@ -1,0 +1,48 @@
+#!/bin/sh
+# Runs Test-Documentation.ps1 and refuses the commit if it fails.
+#
+# This lives in the repository rather than in .git/hooks, which git does not
+# track, so a fresh clone gets it. Point git at it once per clone:
+#
+#     git config core.hooksPath hooks
+#
+# Bypass a single commit with `git commit --no-verify`. That is the right
+# escape hatch for committing work in progress on purpose, and the wrong one
+# for making a failure go away.
+
+set -u
+
+repo=$(git rev-parse --show-toplevel) || exit 0
+check="$repo/Test-Documentation.ps1"
+
+# Nothing to enforce if the check is absent, for instance on an older commit
+# being rebased through.
+[ -f "$check" ] || exit 0
+
+# The check reads the list of files from the index, so staged additions are
+# covered, but it reads their contents from the working tree. Unstaged edits to
+# tracked files therefore make its verdict apply to something other than what
+# is about to be committed. Worth saying rather than silently approximating.
+if ! git diff --quiet 2>/dev/null; then
+    echo "pre-commit: unstaged changes to tracked files are present."
+    echo "pre-commit: the checks below read the working tree, not the index."
+    echo ""
+fi
+
+for shell in powershell.exe pwsh powershell; do
+    if command -v "$shell" >/dev/null 2>&1; then
+        if "$shell" -NoProfile -ExecutionPolicy Bypass -File "$check"; then
+            exit 0
+        fi
+        echo ""
+        echo "pre-commit: documentation checks failed, so the commit was refused."
+        echo "pre-commit: fix what is listed above, or use 'git commit --no-verify'"
+        echo "pre-commit: if you genuinely mean to commit it anyway."
+        exit 1
+    fi
+done
+
+# Refusing a commit because PowerShell is missing would punish the wrong
+# person, so this degrades to a warning instead.
+echo "pre-commit: no PowerShell interpreter found, documentation checks skipped."
+exit 0
